@@ -1,0 +1,17 @@
+/build/
+/release/
+/artifacts/
+/tools/llvm-mingw/
+/tools/downloads/
+/assets/*-alpha.png
+/assets/*-source.png
+/assets/*-generated.png
+/assets/*-nativeframe.png
+/assets/bottomtab_furniture*.png
+/assets/tesmiomenu-pictogram*.png
+.vs/
+.vscode/
+*.user
+*.suo
+Thumbs.db
+Desktop.ini
