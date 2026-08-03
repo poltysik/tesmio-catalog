@@ -64,6 +64,8 @@ static const int MAX_CATALOG_RESOURCES = 320;
 static const int MAX_ITEM_RESOURCES = 24;
 static const int MAX_CATALOG_TYPES = 256;
 static const int MAX_CATALOG_ITEMS = 4096;
+static const int MAX_CATALOG_NEEDS = 64;
+static const int MAX_TOOLTIP_RESOURCES = MAX_ITEM_RESOURCES * 3;
 
 // Catalog data is deliberately independent from the eventual window renderer.
 // The native game window can be replaced without changing how content is
@@ -71,9 +73,17 @@ static const int MAX_CATALOG_ITEMS = 4096;
 struct CatalogResource
 {
     char name[64];
+    char templateName[64];
     wchar_t display[96];
     wchar_t englishDisplay[96];
     bool modded;
+};
+
+struct CatalogNeed
+{
+    char resource[64];
+    char donor[64];
+    char category[32];
 };
 
 struct CatalogItemMetadata
@@ -158,6 +168,8 @@ static void* g_firstBandCode = NULL;
 static void* g_followingBandsCode = NULL;
 static CatalogResource g_catalogResources[MAX_CATALOG_RESOURCES];
 static int g_catalogResourceCount = 0;
+static CatalogNeed g_catalogNeeds[MAX_CATALOG_NEEDS];
+static int g_catalogNeedCount = 0;
 static CatalogType g_catalogTypes[MAX_CATALOG_TYPES];
 static int g_catalogTypeCount = 0;
 static CatalogItem g_catalogItems[MAX_CATALOG_ITEMS];
@@ -204,6 +216,8 @@ enum CatalogUiText
     UI_REQUIRED_RESEARCH,
     UI_LANDSCAPE_UNAVAILABLE,
     UI_SETTINGS_UNAVAILABLE,
+    UI_FILTER_CONSUMES,
+    UI_FILTER_PRODUCES,
     UI_COUNT
 };
 
@@ -217,7 +231,8 @@ static const wchar_t* const g_catalogUiText[2][UI_COUNT] = {
         L"Workshop", L"Type: ", L"Resource: ", L"Source: ", L"Produces: ",
         L"Consumes: ", L"Unavailable", L"Required research",
         L"This item is not available for the current landscape.",
-        L"This feature is disabled in the current game settings."
+        L"This feature is disabled in the current game settings.",
+        L"Consumes", L"Produces"
     },
     {
         L"Каталог Tesmio", L"Тип", L"Ресурс", L"Источник", L"Все", L"Нет",
@@ -227,7 +242,8 @@ static const wchar_t* const g_catalogUiText[2][UI_COUNT] = {
         L"Тип: ", L"Ресурс: ", L"Источник: ", L"Производит: ",
         L"Потребляет: ", L"Недоступно", L"Требуется исследование",
         L"Этот объект недоступен для текущего ландшафта.",
-        L"Эта функция отключена в настройках текущей игры."
+        L"Эта функция отключена в настройках текущей игры.",
+        L"Потребляет", L"Производит"
     }
 };
 
@@ -279,6 +295,8 @@ static int g_selectedResource = 0;
 static bool g_includeVanilla = true;
 static bool g_includeWorkshop = true;
 static bool g_includeTesmioLoader = true;
+static bool g_filterResourceConsumes = false;
+static bool g_filterResourceProduces = false;
 static bool g_onlyAvailable = false;
 static bool g_onlyFavorites = false;
 static unsigned g_availabilityCacheEpoch = 1;
@@ -296,6 +314,7 @@ static float g_catalogDragY = 0.0f;
 static bool g_mouseWasDown = false;
 static bool g_escapeWasDown = false;
 static bool g_toolbarToggleLatch = false;
+static bool g_toolbarMouseWasDown = false;
 static bool g_suppressCustomSelection = false;
 static int g_openDropdown = 0;
 static int g_dropdownPage = 0;
@@ -387,7 +406,8 @@ static const char* FriendlyResourceName(const char* name, const char* supplied)
         { "waste_ash", "Ash" },
         { "copper_ore", "Copper Ore" },
         { "copper_concentrate", "Copper Concentrate" },
-        { "raw_copper", "Raw Copper" }
+        { "raw_copper", "Raw Copper" },
+        { "vehicles", "Vehicles" }
     };
     for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); ++i)
         if (_stricmp(name, names[i].internalName) == 0) return names[i].englishName;
@@ -396,10 +416,10 @@ static const char* FriendlyResourceName(const char* name, const char* supplied)
 
 static bool IsCatalogResourceVisible(const char* name)
 {
-    // These are internal carrier/workforce classes, not material or utility
-    // resources that can meaningfully classify a buildable object.
+    // Workers and train consists are internal engine carriers. Vehicles are
+    // kept because car dealerships and vehicle factories expose them as an
+    // actual accepted/produced catalogue resource.
     return _stricmp(name, "workers") != 0 &&
-           _stricmp(name, "vehicles") != 0 &&
            _stricmp(name, "trains") != 0;
 }
 
@@ -422,7 +442,8 @@ static void NormaliseEnglishCaption(const char* source, char* destination,
     destination[output] = 0;
 }
 
-static void AddCatalogResource(const char* name, const char* displayUtf8, bool modded)
+static void AddCatalogResource(const char* name, const char* templateName,
+                               const char* displayUtf8, bool modded)
 {
     if (!name || !name[0]) return;
     if (!IsCatalogResourceVisible(name)) return;
@@ -431,6 +452,10 @@ static void AddCatalogResource(const char* name, const char* displayUtf8, bool m
         if (_stricmp(g_catalogResources[i].name, name) == 0)
         {
             if (modded) g_catalogResources[i].modded = true;
+            if (templateName && templateName[0])
+                strncpy_s(g_catalogResources[i].templateName,
+                          sizeof(g_catalogResources[i].templateName),
+                          templateName, _TRUNCATE);
             return;
         }
     }
@@ -439,6 +464,8 @@ static void AddCatalogResource(const char* name, const char* displayUtf8, bool m
     CatalogResource& entry = g_catalogResources[g_catalogResourceCount++];
     memset(&entry, 0, sizeof(entry));
     strncpy_s(entry.name, sizeof(entry.name), name, _TRUNCATE);
+    strncpy_s(entry.templateName, sizeof(entry.templateName),
+              templateName && templateName[0] ? templateName : name, _TRUNCATE);
     char captionBuffer[192] = {};
     NormaliseEnglishCaption(FriendlyResourceName(name, displayUtf8),
                             captionBuffer, sizeof(captionBuffer));
@@ -487,7 +514,7 @@ static const wchar_t* RussianResourceName(const char* name)
         { "alcohol", L"Алкоголь" },
         { "cement", L"Цемент" },
         { "alumina", L"Глинозём" },
-        { "food", L"Продукты" },
+        { "food", L"Пища" },
         { "clothes", L"Одежда" },
         { "meat", L"Мясо" },
         { "livestock", L"Скот" },
@@ -515,7 +542,8 @@ static const wchar_t* RussianResourceName(const char* name)
         { "copper_concentrate", L"Медный концентрат" },
         { "raw_copper", L"Черновая медь" },
         { "copper", L"Медь" },
-        { "furniture", L"Мебель" }
+        { "furniture", L"Мебель" },
+        { "vehicles", L"Автомобили" }
     };
     for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); ++i)
         if (_stricmp(name, names[i].internalName) == 0) return names[i].russianName;
@@ -528,8 +556,19 @@ static void SortCatalogResources()
     {
         CatalogResource value = g_catalogResources[i];
         int j = i - 1;
-        while (j >= 0 && _wcsicmp(g_catalogResources[j].display, value.display) > 0)
+        while (j >= 0)
         {
+            bool previousTranslated =
+                RussianResourceName(g_catalogResources[j].name) != NULL;
+            bool valueTranslated = RussianResourceName(value.name) != NULL;
+            bool movePrevious = false;
+            if (g_catalogLanguage == CATALOG_LANGUAGE_RUSSIAN &&
+                previousTranslated != valueTranslated)
+                movePrevious = !previousTranslated && valueTranslated;
+            else
+                movePrevious =
+                    _wcsicmp(g_catalogResources[j].display, value.display) > 0;
+            if (!movePrevious) break;
             g_catalogResources[j + 1] = g_catalogResources[j];
             --j;
         }
@@ -571,8 +610,10 @@ static void LoadBaseCatalogResources()
         "waste_burnable", "waste_toxic", "waste_other", "waste_ash"
     };
     for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); ++i)
-        AddCatalogResource(names[i], names[i], false);
+        AddCatalogResource(names[i], names[i], names[i], false);
 }
+
+static int CatalogResourceIndex(const char* name);
 
 // TesmioLoader's resources plugin uses UTF-8 and permits an arbitrary number
 // of entries. Parse [list] directly so every future resource becomes a catalog
@@ -635,10 +676,85 @@ static void LoadModCatalogResources()
         int templateField = 0;
         if (fieldCount && (IsUnsignedNumber(fields[0]) || _stricmp(fields[0], "auto") == 0))
             templateField = 1;
-        const char* display = fieldCount > templateField + 1 ? fields[templateField + 1] : name;
-        AddCatalogResource(name, display, true);
+        const char* resourceTemplate = fieldCount > templateField
+            ? fields[templateField] : name;
+        const char* display = fieldCount > templateField + 1
+            ? fields[templateField + 1] : name;
+        AddCatalogResource(name, resourceTemplate, display, true);
     }
     free(buffer);
+}
+
+static void LoadCatalogNeeds()
+{
+    g_catalogNeedCount = 0;
+    if (!H->pluginDir || !H->pluginDir[0]) return;
+    char path[MAX_PATH] = {};
+    _snprintf_s(path, sizeof(path), _TRUNCATE, "%s\\needs.ini", H->pluginDir);
+    HANDLE file = CreateFileA(path, GENERIC_READ,
+                              FILE_SHARE_READ | FILE_SHARE_WRITE,
+                              NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (file == INVALID_HANDLE_VALUE) return;
+    LARGE_INTEGER size = {};
+    if (!GetFileSizeEx(file, &size) || size.QuadPart <= 0 ||
+        size.QuadPart > 1024 * 1024)
+    {
+        CloseHandle(file);
+        return;
+    }
+    char* buffer = (char*)malloc((size_t)size.QuadPart + 1);
+    if (!buffer) { CloseHandle(file); return; }
+    DWORD read = 0;
+    if (!ReadFile(file, buffer, (DWORD)size.QuadPart, &read, NULL))
+    {
+        CloseHandle(file);
+        free(buffer);
+        return;
+    }
+    CloseHandle(file);
+    buffer[read] = 0;
+
+    bool inList = false;
+    char* context = NULL;
+    for (char* raw = strtok_s(buffer, "\n", &context); raw;
+         raw = strtok_s(NULL, "\n", &context))
+    {
+        char* line = TrimAscii(raw);
+        if (!line[0] || line[0] == ';' || line[0] == '#') continue;
+        if (line[0] == '[')
+        {
+            inList = _strnicmp(line, "[list]", 6) == 0;
+            continue;
+        }
+        if (!inList || g_catalogNeedCount >= MAX_CATALOG_NEEDS) continue;
+        char* equals = strchr(line, '=');
+        if (!equals) continue;
+        *equals = 0;
+        char* resource = TrimAscii(line);
+        char* value = TrimAscii(equals + 1);
+        if (!resource[0] || !value[0] || CatalogResourceIndex(resource) < 0)
+            continue;
+
+        char* fields[5] = {};
+        int fieldCount = 0;
+        char* valueContext = NULL;
+        for (char* field = strtok_s(value, ",", &valueContext);
+             field && fieldCount < 5;
+             field = strtok_s(NULL, ",", &valueContext))
+            fields[fieldCount++] = TrimAscii(field);
+        if (!fieldCount || !fields[0][0]) continue;
+
+        CatalogNeed& need = g_catalogNeeds[g_catalogNeedCount++];
+        memset(&need, 0, sizeof(need));
+        strncpy_s(need.resource, sizeof(need.resource), resource, _TRUNCATE);
+        strncpy_s(need.donor, sizeof(need.donor), fields[0], _TRUNCATE);
+        strncpy_s(need.category, sizeof(need.category),
+                  fieldCount > 2 && fields[2][0] ? fields[2] : "auto",
+                  _TRUNCATE);
+    }
+    free(buffer);
+    H->log("tesmiomenu  catalog: %d additional citizen need(s) indexed",
+           g_catalogNeedCount);
 }
 
 static void LoadCatalogResources()
@@ -646,6 +762,7 @@ static void LoadCatalogResources()
     g_catalogResourceCount = 0;
     LoadBaseCatalogResources();
     LoadModCatalogResources();
+    LoadCatalogNeeds();
     SortCatalogResources();
     int modded = 0;
     for (int i = 0; i < g_catalogResourceCount; ++i)
@@ -1439,6 +1556,81 @@ static bool FileExistsA(const char* path)
            !(attributes & FILE_ATTRIBUTE_DIRECTORY);
 }
 
+struct WorkshopTesmioSourceCache
+{
+    char itemId[32];
+    bool tesmio;
+};
+
+static WorkshopTesmioSourceCache g_workshopTesmioSourceCache[1024] = {};
+static int g_workshopTesmioSourceCacheCount = 0;
+static void GameDirectory(char* destination, size_t capacity);
+
+// A Workshop item can be only the delivery vehicle for a TesmioLoader package.
+// Such items contain files that the user must manually merge into
+// tesmioloader\build\plugins.  Classify their buildings as Tesmio without a
+// per-building allow-list; ordinary subscribed buildings have no such payload
+// and remain Workshop items.
+static bool WorkshopPackageHasTesmioPayload(const char* toolName)
+{
+    if (!toolName) return false;
+    const char* slash = strchr(toolName, '/');
+    if (!slash) slash = strchr(toolName, '\\');
+    if (!slash) return false;
+    size_t idLength = (size_t)(slash - toolName);
+    if (!idLength || idLength >= 32) return false;
+    char itemId[32] = {};
+    memcpy(itemId, toolName, idLength);
+    itemId[idLength] = 0;
+    if (!IsUnsignedNumber(itemId)) return false;
+
+    for (int i = 0; i < g_workshopTesmioSourceCacheCount; ++i)
+        if (strcmp(g_workshopTesmioSourceCache[i].itemId, itemId) == 0)
+            return g_workshopTesmioSourceCache[i].tesmio;
+
+    char game[2 * MAX_PATH] = {};
+    GameDirectory(game, sizeof(game));
+    bool tesmio = false;
+    char steamapps[2 * MAX_PATH] = {};
+    strncpy_s(steamapps, sizeof(steamapps), game, _TRUNCATE);
+    char* common = strstr(steamapps, "\\common\\");
+    if (common)
+    {
+        *common = 0;
+        char searchPath[4 * MAX_PATH] = {};
+        _snprintf_s(searchPath, sizeof(searchPath), _TRUNCATE,
+                    "%s\\workshop\\content\\784150\\%s\\plugins\\*",
+                    steamapps, itemId);
+        WIN32_FIND_DATAA entry = {};
+        HANDLE search = FindFirstFileA(searchPath, &entry);
+        if (search != INVALID_HANDLE_VALUE)
+        {
+            do
+            {
+                if (!(entry.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) &&
+                    strcmp(entry.cFileName, ".") != 0 &&
+                    strcmp(entry.cFileName, "..") != 0)
+                {
+                    tesmio = true;
+                    break;
+                }
+            } while (FindNextFileA(search, &entry));
+            FindClose(search);
+        }
+    }
+
+    if (g_workshopTesmioSourceCacheCount <
+        (int)(sizeof(g_workshopTesmioSourceCache) /
+              sizeof(g_workshopTesmioSourceCache[0])))
+    {
+        WorkshopTesmioSourceCache& cached =
+            g_workshopTesmioSourceCache[g_workshopTesmioSourceCacheCount++];
+        strncpy_s(cached.itemId, sizeof(cached.itemId), itemId, _TRUNCATE);
+        cached.tesmio = tesmio;
+    }
+    return tesmio;
+}
+
 static void GameDirectory(char* destination, size_t capacity)
 {
     if (!destination || !capacity) return;
@@ -1642,6 +1834,183 @@ static void AddMetadataResource(char values[][64], int* count, const char* name)
     ++*count;
 }
 
+enum CatalogTransport
+{
+    CATALOG_TRANSPORT_UNKNOWN = -1,
+    CATALOG_TRANSPORT_COVERED,
+    CATALOG_TRANSPORT_OPEN,
+    CATALOG_TRANSPORT_GRAVEL,
+    CATALOG_TRANSPORT_OIL,
+    CATALOG_TRANSPORT_CEMENT,
+    CATALOG_TRANSPORT_COOLER,
+    CATALOG_TRANSPORT_LIVESTOCK,
+    CATALOG_TRANSPORT_CONCRETE,
+    CATALOG_TRANSPORT_ELECTRIC,
+    CATALOG_TRANSPORT_NUCLEAR1,
+    CATALOG_TRANSPORT_NUCLEAR2,
+    CATALOG_TRANSPORT_HEATING,
+    CATALOG_TRANSPORT_WATER,
+    CATALOG_TRANSPORT_SEWAGE,
+    CATALOG_TRANSPORT_WASTE,
+    CATALOG_TRANSPORT_VEHICLES
+};
+
+static bool ResourceNameIn(const char* name, const char* const* values,
+                           size_t count)
+{
+    for (size_t i = 0; i < count; ++i)
+        if (_stricmp(name, values[i]) == 0) return true;
+    return false;
+}
+
+static CatalogTransport BaseResourceTransport(const char* name)
+{
+    static const char* covered[] = {
+        "plants", "chemicals", "fabric", "alcohol", "food", "clothes",
+        "ecomponents", "mcomponents", "plastics", "eletronics", "explosives",
+        "fertiliser"
+    };
+    static const char* open[] = {
+        "steel", "aluminium", "prefabpanels", "bricks", "wood", "boards"
+    };
+    static const char* gravel[] = {
+        "gravel", "rawgravel", "coal", "rawcoal", "iron", "rawiron",
+        "bauxite", "rawbauxite", "uranium", "yellowcake"
+    };
+    static const char* oil[] = { "oil", "bitumen", "fuel", "fertiliser_liquid" };
+    static const char* waste[] = {
+        "waste_gravel", "waste_steel", "waste_aluminium", "waste_plastic",
+        "waste_bio", "waste_burnable", "waste_toxic", "waste_other", "waste_ash"
+    };
+    if (ResourceNameIn(name, covered, sizeof(covered) / sizeof(covered[0])))
+        return CATALOG_TRANSPORT_COVERED;
+    if (ResourceNameIn(name, open, sizeof(open) / sizeof(open[0])))
+        return CATALOG_TRANSPORT_OPEN;
+    if (ResourceNameIn(name, gravel, sizeof(gravel) / sizeof(gravel[0])))
+        return CATALOG_TRANSPORT_GRAVEL;
+    if (ResourceNameIn(name, oil, sizeof(oil) / sizeof(oil[0])))
+        return CATALOG_TRANSPORT_OIL;
+    if (ResourceNameIn(name, waste, sizeof(waste) / sizeof(waste[0])))
+        return CATALOG_TRANSPORT_WASTE;
+    if (_stricmp(name, "cement") == 0 || _stricmp(name, "alumina") == 0)
+        return CATALOG_TRANSPORT_CEMENT;
+    if (_stricmp(name, "meat") == 0) return CATALOG_TRANSPORT_COOLER;
+    if (_stricmp(name, "livestock") == 0) return CATALOG_TRANSPORT_LIVESTOCK;
+    if (_stricmp(name, "asphalt") == 0 || _stricmp(name, "concrete") == 0)
+        return CATALOG_TRANSPORT_CONCRETE;
+    if (_stricmp(name, "eletric") == 0) return CATALOG_TRANSPORT_ELECTRIC;
+    if (_stricmp(name, "uf6") == 0) return CATALOG_TRANSPORT_NUCLEAR1;
+    if (_stricmp(name, "nuclearfuel") == 0 ||
+        _stricmp(name, "nuclearfuelburned") == 0)
+        return CATALOG_TRANSPORT_NUCLEAR2;
+    if (_stricmp(name, "heat") == 0) return CATALOG_TRANSPORT_HEATING;
+    if (_stricmp(name, "water") == 0) return CATALOG_TRANSPORT_WATER;
+    if (_stricmp(name, "usagewater") == 0) return CATALOG_TRANSPORT_SEWAGE;
+    if (_stricmp(name, "vehicles") == 0) return CATALOG_TRANSPORT_VEHICLES;
+    return CATALOG_TRANSPORT_UNKNOWN;
+}
+
+static CatalogTransport CatalogResourceTransport(const char* name, int depth = 0)
+{
+    if (!name || !name[0] || depth > 8) return CATALOG_TRANSPORT_UNKNOWN;
+    CatalogTransport direct = BaseResourceTransport(name);
+    if (direct != CATALOG_TRANSPORT_UNKNOWN) return direct;
+    int index = CatalogResourceIndex(name);
+    if (index < 0) return CATALOG_TRANSPORT_UNKNOWN;
+    const char* resourceTemplate = g_catalogResources[index].templateName;
+    if (!resourceTemplate[0] || _stricmp(resourceTemplate, name) == 0)
+        return CATALOG_TRANSPORT_UNKNOWN;
+    return CatalogResourceTransport(resourceTemplate, depth + 1);
+}
+
+static CatalogTransport TransportFromStorageLine(const char* line)
+{
+    struct Token { const char* text; CatalogTransport transport; };
+    static const Token tokens[] = {
+        { "RESOURCE_TRANSPORT_COVERED", CATALOG_TRANSPORT_COVERED },
+        { "RESOURCE_TRANSPORT_OPEN", CATALOG_TRANSPORT_OPEN },
+        { "RESOURCE_TRANSPORT_GRAVEL", CATALOG_TRANSPORT_GRAVEL },
+        { "RESOURCE_TRANSPORT_OIL", CATALOG_TRANSPORT_OIL },
+        { "RESOURCE_TRANSPORT_CEMENT", CATALOG_TRANSPORT_CEMENT },
+        { "RESOURCE_TRANSPORT_COOLER", CATALOG_TRANSPORT_COOLER },
+        { "RESOURCE_TRANSPORT_LIVESTOCK", CATALOG_TRANSPORT_LIVESTOCK },
+        { "RESOURCE_TRANSPORT_CONCRETE", CATALOG_TRANSPORT_CONCRETE },
+        { "RESOURCE_TRANSPORT_ELETRIC", CATALOG_TRANSPORT_ELECTRIC },
+        { "RESOURCE_TRANSPORT_NUCLEAR1", CATALOG_TRANSPORT_NUCLEAR1 },
+        { "RESOURCE_TRANSPORT_NUCLEAR2", CATALOG_TRANSPORT_NUCLEAR2 },
+        { "RESOURCE_TRANSPORT_HEATING", CATALOG_TRANSPORT_HEATING },
+        { "RESOURCE_TRANSPORT_WATER", CATALOG_TRANSPORT_WATER },
+        { "RESOURCE_TRANSPORT_SEWAGE", CATALOG_TRANSPORT_SEWAGE },
+        { "RESOURCE_TRANSPORT_WASTE", CATALOG_TRANSPORT_WASTE },
+        { "RESOURCE_TRANSPORT_VEHICLES", CATALOG_TRANSPORT_VEHICLES }
+    };
+    for (size_t i = 0; i < sizeof(tokens) / sizeof(tokens[0]); ++i)
+        if (AsciiContainsNoCase(line, tokens[i].text)) return tokens[i].transport;
+    return CATALOG_TRANSPORT_UNKNOWN;
+}
+
+static void AddTransportResources(char values[][64], int* count,
+                                  CatalogTransport transport)
+{
+    if (transport == CATALOG_TRANSPORT_UNKNOWN) return;
+    for (int i = 0; i < g_catalogResourceCount; ++i)
+        if (CatalogResourceTransport(g_catalogResources[i].name) == transport)
+            AddMetadataResource(values, count, g_catalogResources[i].name);
+}
+
+static bool BaseDemandContains(const char* category, const char* resource)
+{
+    if (!category || !resource) return false;
+    if (_stricmp(category, "basic") == 0)
+        return _stricmp(resource, "food") == 0 || _stricmp(resource, "meat") == 0;
+    if (_stricmp(category, "medium") == 0)
+        return _stricmp(resource, "food") == 0 || _stricmp(resource, "clothes") == 0;
+    if (_stricmp(category, "advanced") == 0)
+        return _stricmp(resource, "food") == 0 || _stricmp(resource, "clothes") == 0 ||
+               _stricmp(resource, "eletronics") == 0;
+    if (_stricmp(category, "mediumadvanced") == 0)
+        return _stricmp(resource, "clothes") == 0 ||
+               _stricmp(resource, "eletronics") == 0;
+    if (_stricmp(category, "hotel") == 0)
+        return _stricmp(resource, "food") == 0 || _stricmp(resource, "alcohol") == 0 ||
+               _stricmp(resource, "meat") == 0;
+    if (_stricmp(category, "prison") == 0)
+        return _stricmp(resource, "food") == 0 || _stricmp(resource, "meat") == 0;
+    return false;
+}
+
+static void AddDemandCategoryResources(CatalogItemMetadata& metadata,
+                                       const char* category,
+                                       CatalogTransport transport)
+{
+    static const char* baseDemands[] = {
+        "food", "meat", "clothes", "eletronics", "alcohol"
+    };
+    for (size_t i = 0; i < sizeof(baseDemands) / sizeof(baseDemands[0]); ++i)
+    {
+        const char* resource = baseDemands[i];
+        if (!BaseDemandContains(category, resource) ||
+            CatalogResourceTransport(resource) != transport)
+            continue;
+        AddMetadataResource(metadata.consumes, &metadata.consumeCount, resource);
+        AddMetadataResource(metadata.stores, &metadata.storeCount, resource);
+    }
+    for (int i = 0; i < g_catalogNeedCount; ++i)
+    {
+        const CatalogNeed& need = g_catalogNeeds[i];
+        bool categoryMatches = _stricmp(need.category, "auto") == 0
+            ? BaseDemandContains(category, need.donor)
+            : _stricmp(need.category, category) == 0;
+        if (!categoryMatches ||
+            CatalogResourceTransport(need.resource) != transport)
+            continue;
+        AddMetadataResource(metadata.consumes, &metadata.consumeCount,
+                            need.resource);
+        AddMetadataResource(metadata.stores, &metadata.storeCount,
+                            need.resource);
+    }
+}
+
 static bool DirectiveLine(const char* line, const char* directive)
 {
     size_t length = strlen(directive);
@@ -1701,6 +2070,10 @@ static void ParseCatalogDescriptor(CatalogItem& item, const char* path)
 
     int nameId = -1;
     bool hasLiteralName = false;
+    bool isShop = false;
+    bool isVehicleDealer = false;
+    bool isPub = false;
+    bool usesElectricRoad = false;
     char* context = NULL;
     for (char* raw = strtok_s(data, "\r\n", &context); raw;
          raw = strtok_s(NULL, "\r\n", &context))
@@ -1729,6 +2102,26 @@ static void ParseCatalogDescriptor(CatalogItem& item, const char* path)
             continue;
         }
 
+        if (DirectiveLine(line, "$TYPE_SHOP")) isShop = true;
+        if (DirectiveLine(line, "$TYPE_CAR_DEALER")) isVehicleDealer = true;
+        if (DirectiveLine(line, "$TYPE_PUB")) isPub = true;
+        if (DirectiveLine(line, "$SUBTYPE_TRAM") ||
+            DirectiveLine(line, "$SUBTYPE_TROLLEYBUS") ||
+            DirectiveLine(line, "$ROADVEHICLE_TRAM") ||
+            DirectiveLine(line, "$ROADVEHICLE_ELETRIC") ||
+            DirectiveLine(line, "$TYPE_TRAM_GATE"))
+            usesElectricRoad = true;
+
+        if (_strnicmp(line, "$ELETRIC_CONSUMPTION_", 22) == 0)
+        {
+            // Loading/unloading consumers are explicit fixed utility loads.
+            // Worker-factor directives only tune the game's generic building
+            // demand and are intentionally not treated as a separate input.
+            if (AsciiContainsNoCase(line, "_FIXED"))
+                AddMetadataResource(item.metadata.consumes,
+                                    &item.metadata.consumeCount, "eletric");
+        }
+
         char resource[64] = {};
         if (DirectiveLine(line, "$PRODUCTION"))
         {
@@ -1748,6 +2141,49 @@ static void ParseCatalogDescriptor(CatalogItem& item, const char* path)
                 AddMetadataResource(item.metadata.consumes,
                                     &item.metadata.consumeCount, resource);
         }
+        else if (_strnicmp(line, "$STORAGE_DEMAND_", 16) == 0)
+        {
+            const char* category = NULL;
+            if (AsciiContainsNoCase(line, "MEDIUMADVANCED"))
+                category = "mediumadvanced";
+            else if (AsciiContainsNoCase(line, "ADVANCED"))
+                category = "advanced";
+            else if (AsciiContainsNoCase(line, "MEDIUM"))
+                category = "medium";
+            else if (AsciiContainsNoCase(line, "BASIC"))
+                category = "basic";
+            else if (AsciiContainsNoCase(line, "HOTEL"))
+                category = "hotel";
+            else if (AsciiContainsNoCase(line, "PRISON"))
+                category = "prison";
+            CatalogTransport transport = TransportFromStorageLine(line);
+            if (category)
+                AddDemandCategoryResources(item.metadata, category, transport);
+
+            // A demand shelf can also name one resource explicitly. Keep that
+            // resource even when it belongs to a custom category unknown to
+            // this catalog version.
+            if (AsciiContainsNoCase(line, "SPECIAL"))
+            {
+                char copy[384] = {};
+                strncpy_s(copy, sizeof(copy), line, _TRUNCATE);
+                char* tokenContext = NULL;
+                char* token = strtok_s(copy, " \t", &tokenContext);
+                char* last = NULL;
+                while (token)
+                {
+                    last = token;
+                    token = strtok_s(NULL, " \t", &tokenContext);
+                }
+                if (last)
+                {
+                    AddMetadataResource(item.metadata.stores,
+                                        &item.metadata.storeCount, last);
+                    AddMetadataResource(item.metadata.consumes,
+                                        &item.metadata.consumeCount, last);
+                }
+            }
+        }
         else if (_strnicmp(line, "$STORAGE_", 9) == 0 &&
                  AsciiContainsNoCase(line, "SPECIAL"))
         {
@@ -1761,8 +2197,30 @@ static void ParseCatalogDescriptor(CatalogItem& item, const char* path)
                 AddMetadataResource(item.metadata.stores,
                                     &item.metadata.storeCount, last);
         }
+        else if (DirectiveLine(line, "$STORAGE"))
+        {
+            // A plain storage is a warehouse/transfer shelf whose accepted
+            // goods are defined by transport class rather than one resource.
+            // Import/export buffers of factories are deliberately excluded:
+            // their exact inputs and outputs come from the production lines.
+            AddTransportResources(item.metadata.stores,
+                                  &item.metadata.storeCount,
+                                  TransportFromStorageLine(line));
+        }
     }
     free(data);
+    // Shops, vehicle dealers and pubs use their storage as operating stock,
+    // not as a passive warehouse.  In particular, vanilla bars and cafes
+    // declare alcohol through $STORAGE_SPECIAL rather than $CONSUMPTION.
+    if (isShop || isVehicleDealer || isPub)
+        for (int i = 0; i < item.metadata.storeCount; ++i)
+            AddMetadataResource(item.metadata.consumes,
+                                &item.metadata.consumeCount,
+                                item.metadata.stores[i]);
+    if (usesElectricRoad || AsciiContainsNoCase(item.toolName, "tram") ||
+        AsciiContainsNoCase(item.toolName, "trolley"))
+        AddMetadataResource(item.metadata.consumes,
+                            &item.metadata.consumeCount, "eletric");
     int localizedNameId = nameId;
     if (localizedNameId < 0 && item.source == CATALOG_SOURCE_VANILLA)
         localizedNameId = EnglishTextIdByValue(item.display);
@@ -1776,6 +2234,50 @@ static void ParseCatalogDescriptor(CatalogItem& item, const char* path)
                       localized, _TRUNCATE);
     }
     (void)hasLiteralName;
+}
+
+static bool WideContainsNoCase(const wchar_t* text, const wchar_t* needle)
+{
+    if (!text || !needle || !needle[0]) return false;
+    size_t needleLength = wcslen(needle);
+    for (const wchar_t* start = text; *start; ++start)
+    {
+        size_t matched = 0;
+        while (matched < needleLength && start[matched] &&
+               towlower(start[matched]) == towlower(needle[matched]))
+            ++matched;
+        if (matched == needleLength) return true;
+    }
+    return false;
+}
+
+// Network tools (roads, bridges and tunnels) are generated by the game and
+// do not have a building.ini descriptor. Infer their utility requirement from
+// the stable internal tool name and vanilla English localization instead of
+// maintaining a fragile list of individual bridges and tunnels.
+static void InferCatalogFunctionalConsumption(CatalogItem& item)
+{
+    bool roadFamily = AsciiContainsNoCase(item.metadata.type, "road");
+    bool electricVariant = AsciiContainsNoCase(item.toolName, "tram") ||
+                           AsciiContainsNoCase(item.toolName, "trolley") ||
+                           AsciiContainsNoCase(item.toolName, "electric") ||
+                           AsciiContainsNoCase(item.toolName, "eletric") ||
+                           AsciiContainsNoCase(item.descriptorPath, "tram") ||
+                           AsciiContainsNoCase(item.descriptorPath, "trolley") ||
+                           AsciiContainsNoCase(item.descriptorPath, "electric") ||
+                           AsciiContainsNoCase(item.descriptorPath, "eletric");
+    wchar_t englishName[192] = {};
+    if (item.nameTextId > 0)
+        EnglishTextById(item.nameTextId, englishName,
+                        sizeof(englishName) / sizeof(wchar_t));
+    if (WideContainsNoCase(englishName, L"tram") ||
+        WideContainsNoCase(englishName, L"trolley") ||
+        WideContainsNoCase(englishName, L"electric"))
+        electricVariant = true;
+
+    if (roadFamily && electricVariant)
+        AddMetadataResource(item.metadata.consumes,
+                            &item.metadata.consumeCount, "eletric");
 }
 
 static void ApplyCatalogItemLanguageOverrides(CatalogItem& item)
@@ -1818,29 +2320,6 @@ static void ApplyVanillaToolCaption(CatalogItem& item)
                   localized, _TRUNCATE);
 }
 
-static bool MetadataUsesModResource(const CatalogItemMetadata& metadata)
-{
-    for (int entry = 0; entry < metadata.produceCount; ++entry)
-    {
-        int resourceIndex = CatalogResourceIndex(metadata.produces[entry]);
-        if (resourceIndex >= 0 && g_catalogResources[resourceIndex].modded)
-            return true;
-    }
-    for (int entry = 0; entry < metadata.consumeCount; ++entry)
-    {
-        int resourceIndex = CatalogResourceIndex(metadata.consumes[entry]);
-        if (resourceIndex >= 0 && g_catalogResources[resourceIndex].modded)
-            return true;
-    }
-    for (int entry = 0; entry < metadata.storeCount; ++entry)
-    {
-        int resourceIndex = CatalogResourceIndex(metadata.stores[entry]);
-        if (resourceIndex >= 0 && g_catalogResources[resourceIndex].modded)
-            return true;
-    }
-    return false;
-}
-
 static bool IsConfiguredTesmioTool(void* tool)
 {
     for (int i = 0; i < g_catalogBuildingCount; ++i)
@@ -1851,6 +2330,8 @@ static bool IsConfiguredTesmioTool(void* tool)
 static CatalogSource DetectCatalogSource(void* tool, const char* toolName)
 {
     if (IsConfiguredTesmioTool(tool)) return CATALOG_SOURCE_TESMIO;
+    if (WorkshopPackageHasTesmioPayload(toolName))
+        return CATALOG_SOURCE_TESMIO;
 
     char descriptor[4 * MAX_PATH] = {};
     if (FindCatalogDescriptor(toolName, descriptor, sizeof(descriptor)) &&
@@ -1944,10 +2425,8 @@ static void AddCatalogItem(void* tool, int typeIndex, bool forceTesmio)
     if (foundDescriptor)
         ParseCatalogDescriptor(item, descriptor);
     ApplyVanillaToolCaption(item);
+    InferCatalogFunctionalConsumption(item);
     ApplyCatalogItemLanguageOverrides(item);
-    if (item.source == CATALOG_SOURCE_WORKSHOP &&
-        MetadataUsesModResource(item.metadata))
-        item.source = CATALOG_SOURCE_TESMIO;
     InferPreviewPath(name, foundDescriptor ? descriptor : NULL,
                      item.fallbackPreviewPath,
                      sizeof(item.fallbackPreviewPath));
@@ -2002,6 +2481,7 @@ static void RemoveEmptyCatalogTypes()
 static void CaptureCatalogItems()
 {
     g_catalogItemCount = 0;
+    g_workshopTesmioSourceCacheCount = 0;
     RawVector* tabs = (RawVector*)(g_base + G_BOTTOM_TABS);
     if (!H->readablePtr(tabs, sizeof(*tabs)) || !tabs->begin || !tabs->end ||
         tabs->end < tabs->begin || ((tabs->end - tabs->begin) % TAB_SIZE) != 0)
@@ -2079,9 +2559,10 @@ static void CaptureCatalogItems()
 
     // A loader-powered building can exist in the engine's global tool registry
     // without being assigned to any stock bottom-menu group. Scan that registry
-    // as a second source and retain only tools whose descriptor made them a
-    // Tesmio item (for example by using a resource declared in resources.ini).
-    // This is what lets future manual packages appear without a buildingN entry.
+    // as a second source and retain only tools loaded through Tesmio's manual
+    // channel. Resource usage is deliberately not a source signal: a normal
+    // Steam Workshop building may consume a Tesmio resource and must still
+    // remain classified as Workshop.
     int tesmioType = FindCatalogTypeIndex("advindustry");
     int discoveredTesmio = 0;
     RawVector* allTools = (RawVector*)(g_base + G_GAME + TOOL_VECTOR);
@@ -3078,6 +3559,38 @@ static bool ReadGameMouse(int logicalWidth, int logicalHeight,
     return true;
 }
 
+static bool CustomToolbarButtonHovered(void* controller, float renderScale)
+{
+    if (!controller ||
+        !H->readablePtr((unsigned char*)controller + 0x78, 16))
+        return false;
+    int screenWidth = *(int*)(g_base + G_SCREEN_WIDTH);
+    int screenHeight = *(int*)(g_base + G_SCREEN_HEIGHT);
+    float mouseX = 0.0f;
+    float mouseY = 0.0f;
+    if (!ReadGameMouse(screenWidth, screenHeight, &mouseX, &mouseY))
+        return false;
+
+    float toolbarX = *(float*)((unsigned char*)controller + 0x78);
+    float toolbarYFromBottom = *(float*)((unsigned char*)controller + 0x7C);
+    float toolbarHeight = *(float*)((unsigned char*)controller + 0x84);
+    float uiScale = *(float*)(g_base + 0x992088);
+    float buttonWidth = 60.0f * uiScale * renderScale;
+    if (!(buttonWidth >= 24.0f && buttonWidth <= 160.0f) ||
+        !(toolbarHeight >= 24.0f && toolbarHeight <= 180.0f) ||
+        !(toolbarX >= -100.0f && toolbarX <= screenWidth + 100.0f) ||
+        !(toolbarYFromBottom >= -100.0f &&
+          toolbarYFromBottom <= screenHeight + 100.0f))
+        return false;
+
+    // The bottom menu stores Y in the renderer's bottom-origin coordinate
+    // system, while the Windows cursor is measured from the top. Comparing
+    // those directly missed the real button and let Roads render for one frame.
+    float toolbarY = (float)screenHeight - toolbarYFromBottom - toolbarHeight;
+    return PointInside(mouseX, mouseY, toolbarX, toolbarY,
+                       buttonWidth, toolbarHeight);
+}
+
 static bool CatalogCursorInsideClient(HWND window)
 {
     if (!g_catalogVisible || !window || !IsWindow(window)) return false;
@@ -3374,6 +3887,33 @@ static void DrawNativeSourceCheckbox(float mouseX, float mouseY, bool pressed,
     }
 }
 
+static void DrawResourceRelationCheckbox(float mouseX, float mouseY,
+                                         bool pressed, const wchar_t* label,
+                                         const char* logName, float x, float y,
+                                         float width, bool* value)
+{
+    const float rowHeight = 30.0f;
+    const float boxSize = 22.0f;
+    bool hovered = PointInside(mouseX, mouseY, x, y, width, rowHeight);
+    NativeDrawTexture(g_catalogSolidTexture, x, y, width, rowHeight,
+                      hovered ? 1.0f : 0.96f,
+                      hovered ? 0.93f : 0.88f,
+                      hovered ? 0.76f : 0.70f, 1.0f);
+    NativeDrawTexture(g_catalogSolidTexture, x + 4.0f, y + 4.0f,
+                      boxSize, boxSize,
+                      *value ? 0.35f : 0.96f,
+                      *value ? 0.58f : 0.91f,
+                      *value ? 0.27f : 0.80f, 0.98f);
+    NativePrintFitted(label, x + 35.0f, y + 7.0f, width - 42.0f,
+                      0xFF2B2925u);
+    if (hovered && pressed)
+    {
+        *value = !*value;
+        H->log("tesmiomenu  resource relation filter %s: %s", logName,
+               *value ? "enabled" : "disabled");
+    }
+}
+
 static void DrawOnlyAvailableCheckbox(float mouseX, float mouseY, bool pressed,
                                       float x, float y, float width)
 {
@@ -3535,6 +4075,20 @@ static void DrawNativeDropdown(float mouseX, float mouseY, bool pressed,
             g_dropdownPage + 1 < pageCount)
             ++g_dropdownPage;
     }
+    if (g_openDropdown == 2)
+    {
+        float filterY = y + panelHeight - 38.0f;
+        float filterWidth = width * 0.5f - 95.0f;
+        if (filterWidth > 220.0f) filterWidth = 220.0f;
+        if (filterWidth < 80.0f) filterWidth = 80.0f;
+        DrawResourceRelationCheckbox(
+            mouseX, mouseY, pressed, Ui(UI_FILTER_CONSUMES), "consumes",
+            x + 10.0f, filterY, filterWidth, &g_filterResourceConsumes);
+        DrawResourceRelationCheckbox(
+            mouseX, mouseY, pressed, Ui(UI_FILTER_PRODUCES), "produces",
+            x + width - 10.0f - filterWidth, filterY, filterWidth,
+            &g_filterResourceProduces);
+    }
 }
 
 static bool MetadataHasResource(const CatalogItemMetadata& metadata,
@@ -3549,6 +4103,14 @@ static bool MetadataHasResource(const CatalogItemMetadata& metadata,
     return false;
 }
 
+static bool MetadataRelationHasResource(char values[][64], int count,
+                                        const char* resource)
+{
+    for (int i = 0; i < count; ++i)
+        if (_stricmp(values[i], resource) == 0) return true;
+    return false;
+}
+
 static bool CatalogItemAvailableCached(CatalogItem& item);
 
 static bool CatalogItemPassesFilters(CatalogItem& item)
@@ -3557,8 +4119,22 @@ static bool CatalogItemPassesFilters(CatalogItem& item)
     if (g_selectedResource > 0)
     {
         if (g_selectedResource > g_catalogResourceCount) return false;
-        if (!MetadataHasResource(item.metadata,
-                                 g_catalogResources[g_selectedResource - 1].name))
+        const char* resource =
+            g_catalogResources[g_selectedResource - 1].name;
+        if (g_filterResourceConsumes || g_filterResourceProduces)
+        {
+            bool relationMatches =
+                (g_filterResourceConsumes &&
+                 MetadataRelationHasResource(item.metadata.consumes,
+                                             item.metadata.consumeCount,
+                                             resource)) ||
+                (g_filterResourceProduces &&
+                 MetadataRelationHasResource(item.metadata.produces,
+                                             item.metadata.produceCount,
+                                             resource));
+            if (!relationMatches) return false;
+        }
+        else if (!MetadataHasResource(item.metadata, resource))
             return false;
     }
     if (item.source == CATALOG_SOURCE_VANILLA && !g_includeVanilla) return false;
@@ -3623,7 +4199,7 @@ static void BuildItemResourceList(const CatalogItem& item, wchar_t* destination,
     if (!destination[0]) wcscpy_s(destination, capacity, Ui(UI_NONE));
 }
 
-static void BuildRelationText(const wchar_t* prefix, char values[][64], int count,
+static void BuildRelationText(const wchar_t* prefix, const char values[][64], int count,
                               wchar_t* destination, size_t capacity)
 {
     wcsncpy_s(destination, capacity, prefix, _TRUNCATE);
@@ -3636,6 +4212,404 @@ static void BuildRelationText(const wchar_t* prefix, char values[][64], int coun
     for (int i = 0; i < count; ++i)
         AppendResourceDisplay(list, sizeof(list) / sizeof(wchar_t), values[i]);
     wcscat_s(destination, capacity, list);
+}
+
+struct CatalogResourceTooltip
+{
+    bool active;
+    wchar_t title[64];
+    char resources[MAX_TOOLTIP_RESOURCES][64];
+    int count;
+    int columns;
+    int rows;
+    float columnWidths[8];
+    float x;
+    float y;
+    float width;
+    float height;
+};
+
+static void AddTooltipResource(CatalogResourceTooltip& tooltip,
+                               const char* resource)
+{
+    if (!resource || !resource[0] || tooltip.count >= MAX_TOOLTIP_RESOURCES)
+        return;
+    for (int i = 0; i < tooltip.count; ++i)
+        if (_stricmp(tooltip.resources[i], resource) == 0) return;
+    strncpy_s(tooltip.resources[tooltip.count], 64, resource, _TRUNCATE);
+    ++tooltip.count;
+}
+
+static void AddTooltipResources(CatalogResourceTooltip& tooltip,
+                                const char values[][64], int count)
+{
+    for (int i = 0; i < count; ++i)
+        AddTooltipResource(tooltip, values[i]);
+}
+
+static void PrepareTooltipResources(CatalogResourceTooltip& tooltip,
+                                    const CatalogItem& item, int relation)
+{
+    tooltip.count = 0;
+    if (relation == 1 || relation == 0)
+        AddTooltipResources(tooltip, item.metadata.produces,
+                            item.metadata.produceCount);
+    if (relation == 2 || relation == 0)
+        AddTooltipResources(tooltip, item.metadata.consumes,
+                            item.metadata.consumeCount);
+    if (relation == 0)
+        AddTooltipResources(tooltip, item.metadata.stores,
+                            item.metadata.storeCount);
+}
+
+static void LayoutResourceTooltip(CatalogResourceTooltip& tooltip,
+                                  float mouseX, float mouseY,
+                                  float boundsX, float boundsY,
+                                  float boundsWidth, float boundsHeight)
+{
+    if (!tooltip.active || tooltip.count <= 0) return;
+    tooltip.columns = tooltip.count <= 6 ? 1 : (tooltip.count <= 16 ? 2 : 3);
+    tooltip.rows = (tooltip.count + tooltip.columns - 1) / tooltip.columns;
+    int maximumRows = (int)((boundsHeight - 58.0f) / 27.0f);
+    if (maximumRows < 1) maximumRows = 1;
+    while (tooltip.rows > maximumRows && tooltip.columns < 8)
+    {
+        ++tooltip.columns;
+        tooltip.rows = (tooltip.count + tooltip.columns - 1) / tooltip.columns;
+    }
+    for (int column = 0; column < tooltip.columns; ++column)
+    {
+        float widest = 0.0f;
+        int first = column * tooltip.rows;
+        int last = first + tooltip.rows;
+        if (last > tooltip.count) last = tooltip.count;
+        for (int i = first; i < last; ++i)
+        {
+            int resourceIndex = CatalogResourceIndex(tooltip.resources[i]);
+            const wchar_t* display = resourceIndex >= 0
+                ? g_catalogResources[resourceIndex].display : L"";
+            float textWidth = ApproximateTextWidth(display);
+            if (textWidth > widest) widest = textWidth;
+        }
+        if (widest < 120.0f) widest = 120.0f;
+        if (widest > 250.0f) widest = 250.0f;
+        tooltip.columnWidths[column] = widest + 28.0f;
+    }
+    tooltip.width = 28.0f;
+    for (int column = 0; column < tooltip.columns; ++column)
+        tooltip.width += tooltip.columnWidths[column];
+    float titleWidth = ApproximateTextWidth(tooltip.title) + 36.0f;
+    if (tooltip.width < titleWidth) tooltip.width = titleWidth;
+    if (tooltip.width > boundsWidth - 20.0f)
+    {
+        tooltip.width = boundsWidth - 20.0f;
+        float evenWidth = (tooltip.width - 28.0f) / tooltip.columns;
+        for (int column = 0; column < tooltip.columns; ++column)
+            tooltip.columnWidths[column] = evenWidth;
+    }
+    tooltip.height = 48.0f + tooltip.rows * 27.0f;
+    if (tooltip.height > boundsHeight - 20.0f)
+        tooltip.height = boundsHeight - 20.0f;
+
+    tooltip.x = mouseX + 18.0f;
+    tooltip.y = mouseY + 18.0f;
+    if (tooltip.x + tooltip.width > boundsX + boundsWidth - 10.0f)
+        tooltip.x = mouseX - tooltip.width - 18.0f;
+    if (tooltip.y + tooltip.height > boundsY + boundsHeight - 10.0f)
+        tooltip.y = mouseY - tooltip.height - 18.0f;
+    if (tooltip.x < boundsX + 10.0f) tooltip.x = boundsX + 10.0f;
+    if (tooltip.y < boundsY + 10.0f) tooltip.y = boundsY + 10.0f;
+}
+
+struct ResourceTooltipRenderSnapshot
+{
+    wchar_t title[96];
+    wchar_t lines[MAX_TOOLTIP_RESOURCES][96];
+    int count;
+    int columns;
+    int rows;
+    float columnWidths[8];
+    float width;
+    float height;
+};
+
+static const UINT WM_RESOURCE_TOOLTIP_UPDATE = WM_APP + 0x371;
+static HWND g_resourceTooltipWindow = NULL;
+static HANDLE g_resourceTooltipThread = NULL;
+static HANDLE g_resourceTooltipReadyEvent = NULL;
+static SRWLOCK g_resourceTooltipLock = SRWLOCK_INIT;
+static ResourceTooltipRenderSnapshot g_resourceTooltipSnapshot = {};
+static HWND g_resourceTooltipRequestedParent = NULL;
+static RECT g_resourceTooltipRequestedRect = {};
+static bool g_resourceTooltipRequestedVisible = false;
+static bool g_resourceTooltipRequestedRedraw = false;
+static unsigned long long g_resourceTooltipContentHash = 0;
+static volatile LONG g_resourceTooltipUpdateQueued = 0;
+
+static void QueueResourceTooltipUpdate()
+{
+    HWND window = g_resourceTooltipWindow;
+    if (!window || !IsWindow(window)) return;
+    if (InterlockedExchange(&g_resourceTooltipUpdateQueued, 1) == 0)
+    {
+        if (!PostMessageW(window, WM_RESOURCE_TOOLTIP_UPDATE, 0, 0))
+            InterlockedExchange(&g_resourceTooltipUpdateQueued, 0);
+    }
+}
+
+static LRESULT CALLBACK ResourceTooltipWindowProc(HWND window, UINT message,
+                                                   WPARAM wParam, LPARAM lParam)
+{
+    switch (message)
+    {
+        case WM_NCHITTEST:
+            return HTTRANSPARENT;
+        case WM_MOUSEACTIVATE:
+            return MA_NOACTIVATE;
+        case WM_ERASEBKGND:
+            return 1;
+        case WM_RESOURCE_TOOLTIP_UPDATE:
+        {
+            InterlockedExchange(&g_resourceTooltipUpdateQueued, 0);
+            HWND parent = NULL;
+            RECT requestedRect = {};
+            bool visible = false;
+            bool redraw = false;
+            AcquireSRWLockExclusive(&g_resourceTooltipLock);
+            parent = g_resourceTooltipRequestedParent;
+            requestedRect = g_resourceTooltipRequestedRect;
+            visible = g_resourceTooltipRequestedVisible;
+            redraw = g_resourceTooltipRequestedRedraw;
+            g_resourceTooltipRequestedRedraw = false;
+            ReleaseSRWLockExclusive(&g_resourceTooltipLock);
+
+            if (!visible)
+            {
+                ShowWindow(window, SW_HIDE);
+                return 0;
+            }
+
+            if (parent && IsWindow(parent))
+                SetWindowLongPtrW(window, GWLP_HWNDPARENT, (LONG_PTR)parent);
+            int width = requestedRect.right - requestedRect.left;
+            int height = requestedRect.bottom - requestedRect.top;
+            if (width < 40) width = 40;
+            if (height < 40) height = 40;
+            SetWindowPos(window, HWND_TOP, requestedRect.left,
+                         requestedRect.top, width, height,
+                         SWP_NOACTIVATE | SWP_SHOWWINDOW);
+            if (redraw)
+                InvalidateRect(window, NULL, FALSE);
+            UpdateWindow(window);
+            return 0;
+        }
+        case WM_PAINT:
+        {
+            ResourceTooltipRenderSnapshot tooltip = {};
+            AcquireSRWLockShared(&g_resourceTooltipLock);
+            tooltip = g_resourceTooltipSnapshot;
+            ReleaseSRWLockShared(&g_resourceTooltipLock);
+
+            PAINTSTRUCT paint = {};
+            HDC dc = BeginPaint(window, &paint);
+            RECT client = {};
+            GetClientRect(window, &client);
+            int width = client.right - client.left;
+            int height = client.bottom - client.top;
+            HBRUSH fill = CreateSolidBrush(RGB(253, 240, 210));
+            HBRUSH border = CreateSolidBrush(RGB(121, 99, 72));
+            FillRect(dc, &client, fill);
+            FrameRect(dc, &client, border);
+            DeleteObject(fill);
+            DeleteObject(border);
+
+            float scaleX = tooltip.width > 1.0f ? width / tooltip.width : 1.0f;
+            float scaleY = tooltip.height > 1.0f ? height / tooltip.height : 1.0f;
+            int fontHeight = (int)(19.0f * scaleY + 0.5f);
+            if (fontHeight < 14) fontHeight = 14;
+            HFONT font = CreateFontW(-fontHeight, 0, 0, 0, FW_NORMAL, FALSE,
+                                     FALSE, FALSE, DEFAULT_CHARSET,
+                                     OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                                     CLEARTYPE_QUALITY, DEFAULT_PITCH,
+                                     L"Segoe UI");
+            HGDIOBJ oldFont = SelectObject(dc, font);
+            SetBkMode(dc, TRANSPARENT);
+            SetTextColor(dc, RGB(158, 45, 39));
+            RECT titleRect = {
+                (LONG)(14.0f * scaleX), (LONG)(8.0f * scaleY),
+                width - (LONG)(14.0f * scaleX), (LONG)(38.0f * scaleY)
+            };
+            DrawTextW(dc, tooltip.title, -1, &titleRect,
+                      DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+
+            SetTextColor(dc, RGB(43, 41, 37));
+            float columnX = 14.0f;
+            for (int column = 0; column < tooltip.columns; ++column)
+            {
+                int first = column * tooltip.rows;
+                int last = first + tooltip.rows;
+                if (last > tooltip.count) last = tooltip.count;
+                for (int i = first; i < last; ++i)
+                {
+                    RECT rowRect = {
+                        (LONG)(columnX * scaleX),
+                        (LONG)((39.0f + (i - first) * 27.0f) * scaleY),
+                        (LONG)((columnX + tooltip.columnWidths[column] - 12.0f) * scaleX),
+                        (LONG)((65.0f + (i - first) * 27.0f) * scaleY)
+                    };
+                    DrawTextW(dc, tooltip.lines[i], -1, &rowRect,
+                              DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS |
+                              DT_NOPREFIX);
+                }
+                columnX += tooltip.columnWidths[column];
+            }
+            SelectObject(dc, oldFont);
+            DeleteObject(font);
+            EndPaint(window, &paint);
+            return 0;
+        }
+    }
+    return DefWindowProcW(window, message, wParam, lParam);
+}
+
+static DWORD WINAPI ResourceTooltipThreadProc(void*)
+{
+    WNDCLASSEXW windowClass = {};
+    windowClass.cbSize = sizeof(windowClass);
+    windowClass.lpfnWndProc = ResourceTooltipWindowProc;
+    windowClass.hInstance = (HINSTANCE)H->exeModule;
+    windowClass.lpszClassName = L"TesmioResourceTooltip";
+    bool classRegistered = RegisterClassExW(&windowClass) != 0 ||
+                           GetLastError() == ERROR_CLASS_ALREADY_EXISTS;
+    if (classRegistered)
+    {
+        g_resourceTooltipWindow = CreateWindowExW(
+            WS_EX_TRANSPARENT | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW,
+            L"TesmioResourceTooltip", L"", WS_POPUP,
+            0, 0, 1, 1, NULL, NULL, (HINSTANCE)H->exeModule, NULL);
+    }
+    if (g_resourceTooltipReadyEvent)
+        SetEvent(g_resourceTooltipReadyEvent);
+    if (!g_resourceTooltipWindow) return 1;
+
+    MSG message = {};
+    while (GetMessageW(&message, NULL, 0, 0) > 0)
+    {
+        TranslateMessage(&message);
+        DispatchMessageW(&message);
+    }
+    return 0;
+}
+
+static bool StartResourceTooltipThread()
+{
+    if (g_resourceTooltipThread) return g_resourceTooltipWindow != NULL;
+    g_resourceTooltipReadyEvent = CreateEventW(NULL, TRUE, FALSE, NULL);
+    if (!g_resourceTooltipReadyEvent) return false;
+    g_resourceTooltipThread = CreateThread(NULL, 0,
+        ResourceTooltipThreadProc, NULL, 0, NULL);
+    if (!g_resourceTooltipThread) return false;
+    WaitForSingleObject(g_resourceTooltipReadyEvent, 1500);
+    return g_resourceTooltipWindow != NULL;
+}
+
+static void HideResourceTooltipWindow()
+{
+    bool changed = false;
+    AcquireSRWLockExclusive(&g_resourceTooltipLock);
+    changed = g_resourceTooltipRequestedVisible;
+    g_resourceTooltipRequestedVisible = false;
+    ReleaseSRWLockExclusive(&g_resourceTooltipLock);
+    if (changed) QueueResourceTooltipUpdate();
+}
+
+static unsigned long long ResourceTooltipHash(
+    const ResourceTooltipRenderSnapshot& tooltip)
+{
+    unsigned long long hash = 1469598103934665603ull;
+    const unsigned char* bytes = (const unsigned char*)&tooltip;
+    for (size_t i = 0; i < sizeof(tooltip); ++i)
+        hash = (hash ^ bytes[i]) * 1099511628211ull;
+    return hash;
+}
+
+static void UpdateResourceTooltipWindow(const CatalogResourceTooltip& tooltip,
+                                        int logicalWidth, int logicalHeight)
+{
+    if (!tooltip.active || tooltip.count <= 0)
+    {
+        HideResourceTooltipWindow();
+        return;
+    }
+    HWND parent = GetForegroundWindow();
+    DWORD processId = 0;
+    if (!parent || !GetWindowThreadProcessId(parent, &processId) ||
+        processId != GetCurrentProcessId())
+    {
+        HideResourceTooltipWindow();
+        return;
+    }
+
+    if (!g_resourceTooltipWindow || !IsWindow(g_resourceTooltipWindow)) return;
+
+    RECT client = {};
+    if (!GetClientRect(parent, &client) || logicalWidth <= 0 || logicalHeight <= 0)
+        return;
+    float scaleX = (float)(client.right - client.left) / logicalWidth;
+    float scaleY = (float)(client.bottom - client.top) / logicalHeight;
+    int x = (int)(tooltip.x * scaleX + 0.5f);
+    int y = (int)(tooltip.y * scaleY + 0.5f);
+    int width = (int)(tooltip.width * scaleX + 0.5f);
+    int height = (int)(tooltip.height * scaleY + 0.5f);
+    if (width < 40) width = 40;
+    if (height < 40) height = 40;
+
+    POINT clientOrigin = {0, 0};
+    if (!ClientToScreen(parent, &clientOrigin)) return;
+    RECT requestedRect = {
+        clientOrigin.x + x, clientOrigin.y + y,
+        clientOrigin.x + x + width, clientOrigin.y + y + height
+    };
+
+    ResourceTooltipRenderSnapshot snapshot = {};
+    wcsncpy(snapshot.title, tooltip.title,
+            sizeof(snapshot.title) / sizeof(snapshot.title[0]) - 1);
+    snapshot.count = tooltip.count;
+    snapshot.columns = tooltip.columns;
+    snapshot.rows = tooltip.rows;
+    snapshot.width = tooltip.width;
+    snapshot.height = tooltip.height;
+    for (int column = 0; column < 8; ++column)
+        snapshot.columnWidths[column] = tooltip.columnWidths[column];
+    for (int i = 0; i < tooltip.count && i < MAX_TOOLTIP_RESOURCES; ++i)
+    {
+        int resourceIndex = CatalogResourceIndex(tooltip.resources[i]);
+        const wchar_t* display = resourceIndex >= 0
+            ? g_catalogResources[resourceIndex].display : L"";
+        wcsncpy(snapshot.lines[i], display,
+                sizeof(snapshot.lines[i]) / sizeof(snapshot.lines[i][0]) - 1);
+    }
+
+    unsigned long long contentHash = ResourceTooltipHash(snapshot);
+    bool changed = false;
+    AcquireSRWLockExclusive(&g_resourceTooltipLock);
+    bool contentChanged = contentHash != g_resourceTooltipContentHash;
+    bool rectChanged = memcmp(&requestedRect, &g_resourceTooltipRequestedRect,
+                              sizeof(RECT)) != 0;
+    bool parentChanged = parent != g_resourceTooltipRequestedParent;
+    changed = contentChanged || rectChanged || parentChanged ||
+              !g_resourceTooltipRequestedVisible;
+    if (contentChanged)
+    {
+        g_resourceTooltipSnapshot = snapshot;
+        g_resourceTooltipContentHash = contentHash;
+        g_resourceTooltipRequestedRedraw = true;
+    }
+    g_resourceTooltipRequestedParent = parent;
+    g_resourceTooltipRequestedRect = requestedRect;
+    g_resourceTooltipRequestedVisible = true;
+    ReleaseSRWLockExclusive(&g_resourceTooltipLock);
+    if (changed) QueueResourceTooltipUpdate();
 }
 
 struct CatalogAvailabilityInfo
@@ -3927,6 +4901,7 @@ static bool ActivateCatalogBuilding(const CatalogItem& item)
     *(void**)(g_base + 0x9E2338) = NULL;
     g_catalogVisible = false;
     g_openDropdown = 0;
+    HideResourceTooltipWindow();
     g_suppressCustomSelection = true;
     H->log("tesmiomenu  catalog building activated: %s (%p)",
            item.toolName, currentTool);
@@ -4014,6 +4989,7 @@ static void DrawNativeCatalog()
     {
         g_pendingCatalogItem = -1;
         g_catalogVisible = false;
+        HideResourceTooltipWindow();
         *(unsigned char*)(g_base + G_CLICK_FLAG) = 0;
         g_mouseWasDown = leftDown;
         H->log("tesmiomenu  native catalog closed");
@@ -4063,6 +5039,76 @@ static void DrawNativeCatalog()
     int firstResult = g_resultPage * pageSize;
     int lastResult = firstResult + pageSize;
     if (lastResult > resultCount) lastResult = resultCount;
+    CatalogResourceTooltip resourceTooltip = {};
+    if (g_openDropdown == 0)
+    {
+        for (int position = firstResult;
+             position < lastResult && !resourceTooltip.active; ++position)
+        {
+            int local = position - firstResult;
+            int column = local % 2;
+            int row = local / 2;
+            const CatalogItem& item = g_catalogItems[matches[position]];
+            float cardX = x + 40.0f + column * (cardWidth + cardGap);
+            float cardY = y + 188.0f + row * (cardHeight + cardGap);
+            float imageX = cardX + 16.0f;
+            float imageWidth = cardWidth * 0.34f;
+            float textX = imageX + imageWidth + 16.0f;
+            float textWidth = cardX + cardWidth - 26.0f - textX;
+
+            wchar_t resources[384] = {};
+            BuildItemResourceList(item, resources, 384);
+            wchar_t resourceText[448] = {};
+            wcsncpy_s(resourceText, 448, Ui(UI_RESOURCE_PREFIX), _TRUNCATE);
+            wcscat_s(resourceText, 448, resources);
+            wchar_t produces[448] = {};
+            wchar_t consumes[448] = {};
+            BuildRelationText(Ui(UI_PRODUCES_PREFIX), item.metadata.produces,
+                              item.metadata.produceCount, produces, 448);
+            BuildRelationText(Ui(UI_CONSUMES_PREFIX), item.metadata.consumes,
+                              item.metadata.consumeCount, consumes, 448);
+
+            int relation = -1;
+            const wchar_t* title = NULL;
+            if (ApproximateTextWidth(resourceText) > textWidth &&
+                PointInside(mouseX, mouseY, textX, cardY + 75.0f,
+                            textWidth, 29.0f))
+            {
+                relation = 0;
+                title = Ui(UI_RESOURCE);
+            }
+            else if (ApproximateTextWidth(produces) > textWidth &&
+                     PointInside(mouseX, mouseY, textX, cardY + 141.0f,
+                                 textWidth, 29.0f))
+            {
+                relation = 1;
+                title = Ui(UI_PRODUCES_PREFIX);
+            }
+            else if (ApproximateTextWidth(consumes) > textWidth &&
+                     PointInside(mouseX, mouseY, textX, cardY + 175.0f,
+                                 textWidth, 29.0f))
+            {
+                relation = 2;
+                title = Ui(UI_CONSUMES_PREFIX);
+            }
+            if (relation >= 0)
+            {
+                resourceTooltip.active = true;
+                wcsncpy_s(resourceTooltip.title,
+                          sizeof(resourceTooltip.title) / sizeof(wchar_t),
+                          title, _TRUNCATE);
+                size_t titleLength = wcslen(resourceTooltip.title);
+                while (titleLength &&
+                       (resourceTooltip.title[titleLength - 1] == L' ' ||
+                        resourceTooltip.title[titleLength - 1] == L':'))
+                    resourceTooltip.title[--titleLength] = 0;
+                PrepareTooltipResources(resourceTooltip, item, relation);
+            }
+        }
+        LayoutResourceTooltip(resourceTooltip, mouseX, mouseY,
+                              x + 10.0f, y + 174.0f,
+                              width - 20.0f, height - 250.0f);
+    }
     const CatalogItem* hoveredLockedItem = NULL;
     CatalogAvailabilityInfo hoveredAvailability = {};
     for (int position = firstResult; position < lastResult; ++position)
@@ -4231,6 +5277,11 @@ static void DrawNativeCatalog()
                               tooltipWidth - 40.0f, 0xFF6A5E4Du);
     }
 
+    if (!hoveredLockedItem)
+        UpdateResourceTooltipWindow(resourceTooltip, screenWidth, screenHeight);
+    else
+        HideResourceTooltipWindow();
+
     float arrowY = y + height - 61.0f;
     DrawFavoritesModeButton(mouseX, mouseY,
                             g_openDropdown == 0 ? pressed : false,
@@ -4277,6 +5328,25 @@ static void DrawNativeCatalog()
     g_mouseWasDown = leftDown;
 }
 
+static void ToggleCatalogFromToolbar()
+{
+    g_catalogVisible = !g_catalogVisible;
+    if (!g_catalogVisible) HideResourceTooltipWindow();
+    g_catalogDragging = false;
+    g_openDropdown = 0;
+    g_pendingCatalogItem = -1;
+    if (g_catalogVisible)
+    {
+        ++g_availabilityCacheEpoch;
+        if (!g_availabilityCacheEpoch) g_availabilityCacheEpoch = 1;
+        g_resultPage = g_onlyFavorites
+            ? g_favoritesResultPage
+            : g_regularResultPage;
+    }
+    H->log("tesmiomenu  native catalog %s by toolbar button",
+           g_catalogVisible ? "opened" : "closed");
+}
+
 static void h_BottomMenuRender(void* self, float scale)
 {
     EnsureGameInputShield();
@@ -4284,32 +5354,31 @@ static void h_BottomMenuRender(void* self, float scale)
     RawVector* tabs = (RawVector*)(g_base + G_BOTTOM_TABS);
     unsigned char** selected = (unsigned char**)(g_base + G_SELECTED_BOTTOM_TAB);
     bool leftDown = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
+    bool toolbarPressed = leftDown && !g_toolbarMouseWasDown;
     bool validSelection = H->readablePtr(tabs, sizeof(*tabs)) && tabs->begin &&
                           H->readablePtr(selected, sizeof(*selected));
     unsigned char* customTab = validSelection ? FindCustomTab(tabs) : NULL;
     bool customSelected = customTab && *selected == customTab;
+    bool preemptedCustomClick = validSelection && !g_suppressCustomSelection &&
+        toolbarPressed && CustomToolbarButtonHovered(self, scale);
+    if (preemptedCustomClick)
+    {
+        ToggleCatalogFromToolbar();
+        g_toolbarToggleLatch = true;
+        g_suppressCustomSelection = true;
+        *selected = NULL;
+        *(unsigned char*)(g_base + G_CLICK_FLAG) = 0;
+    }
     if (g_suppressCustomSelection)
     {
         if (customSelected) *selected = NULL;
+        *(unsigned char*)(g_base + G_CLICK_FLAG) = 0;
         if (!leftDown) g_suppressCustomSelection = false;
     }
-    else if (customSelected)
+    else if (customSelected && !preemptedCustomClick)
     {
         if (!g_toolbarToggleLatch)
-        {
-            g_catalogVisible = !g_catalogVisible;
-            g_catalogDragging = false;
-            if (g_catalogVisible)
-            {
-                ++g_availabilityCacheEpoch;
-                if (!g_availabilityCacheEpoch) g_availabilityCacheEpoch = 1;
-                g_resultPage = g_onlyFavorites
-                    ? g_favoritesResultPage
-                    : g_regularResultPage;
-            }
-            H->log("tesmiomenu  native catalog %s by toolbar button",
-                   g_catalogVisible ? "opened" : "closed");
-        }
+            ToggleCatalogFromToolbar();
         g_toolbarToggleLatch = true;
         // NULL is a supported "no build category" state in the renderer. It
         // keeps the catalog independent instead of opening Roads behind it.
@@ -4327,6 +5396,7 @@ static void h_BottomMenuRender(void* self, float scale)
     {
         g_pendingCatalogItem = -1;
         g_catalogVisible = false;
+        HideResourceTooltipWindow();
         g_openDropdown = 0;
         H->log("tesmiomenu  native catalog closed by stock category");
     }
@@ -4340,6 +5410,7 @@ static void h_BottomMenuRender(void* self, float scale)
     {
         g_pendingCatalogItem = -1;
         g_catalogVisible = false;
+        HideResourceTooltipWindow();
         g_catalogDragging = false;
         g_openDropdown = 0;
         H->log("tesmiomenu  native catalog closed by Escape");
@@ -4348,6 +5419,9 @@ static void h_BottomMenuRender(void* self, float scale)
 
     if (g_catalogVisible && g_catalogNativeReady)
         DrawNativeCatalog();
+    else
+        HideResourceTooltipWindow();
+    g_toolbarMouseWasDown = leftDown;
 }
 
 static bool ResolveNativeCatalogImports()
@@ -4385,10 +5459,13 @@ static void h_MenuInit(void)
     // loading of another republic).  Do not draw the old catalogue for even
     // one transition frame, and never reuse textures owned by the old world.
     g_catalogVisible = false;
+    HideResourceTooltipWindow();
     g_catalogDragging = false;
     g_openDropdown = 0;
     g_pendingCatalogItem = -1;
     g_mouseWasDown = false;
+    g_toolbarMouseWasDown = false;
+    g_toolbarToggleLatch = false;
     g_catalogX = -1.0f;
     g_catalogY = -1.0f;
     ResetCatalogTextureState();
@@ -4408,12 +5485,14 @@ extern "C" __declspec(dllexport) int TsmPluginInit(const TsmHost* host, TsmPlugi
 {
     H = host;
     g_base = host->exeBase;
-    info->name = "tesmiomenu";
+    info->name = "Tesmio Catalog";
     info->version = "1.0.0";
     ReadSettings();
     LoadEnglishTextTable();
     LoadRussianTextTable();
     LoadCatalogResources();
+    if (g_enabled && !StartResourceTooltipThread())
+        H->log("tesmiomenu: resource tooltip UI thread failed to start");
     H->log("tesmiomenu  configurable TesmioLoader build tab");
     return g_enabled ? 0 : 1;
 }

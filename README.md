@@ -9,19 +9,22 @@ bundle third-party buildings.
 
 ## Features
 
-- Type, resource and source filters.
+- Type, resource and source filters, plus Produces/Consumes relations.
 - Separate Vanilla, Steam Workshop and Tesmio sources.
 - Favorites and “Only available” mode.
 - Native game availability rules: research, scenario settings and climate.
 - Automatic English/Russian interface selection from the current game language.
 - Vanilla names and categories are read from the game localization tables.
 - Mod resources and compatible Tesmio buildings are discovered at runtime.
+- Tesmio-enabled Workshop packages are classified automatically from their
+  loader payload; no per-building catalog entry is required.
+- Opaque resource-list tooltips keep long card contents readable.
 - Two cards per row with pagination and safe text truncation.
 
 ## Compatibility
 
 - Workers & Resources: Soviet Republic `1.1.1.7` (64-bit DX11 build).
-- TesmioLoader API 3 / launcher `b0.3.3`.
+- TesmioLoader API 3 / launcher `b0.3.4`.
 
 The plugin checks known function bytes before installing its hooks and never
 changes `SOVIET64.exe` on disk. A game update can still require a new catalog
@@ -32,7 +35,7 @@ build. Launch the game through `tesmiolauncher.exe`.
 1. Install TesmioLoader for Workers & Resources: Soviet Republic.
 2. Extract `TesmioCatalog-1.0.0.zip` into the loader's `build` directory so
    that the `plugins` and `vfs` folders merge with the existing folders.
-3. Start the game through `tesmiolauncher.exe` and enable `tesmiomenu.dll`.
+3. Start the game through `tesmiolauncher.exe` and enable `TesmioCatalog.dll`.
 
 The catalog itself does not add products or buildings. Keep the original mods
 installed when loading saves that use their content.
@@ -58,9 +61,13 @@ notes are intentionally excluded from the repository.
 ## Русский
 
 Каталог автоматически переключается на русский язык вместе с игрой. Он
-сортирует загруженные постройки по типу, ресурсам и источнику, показывает
-ограничения исследований и климата, а также поддерживает избранное. Модовые
-названия не переводятся искусственно — используются названия авторов модов.
+сортирует загруженные постройки по типу, ресурсам и источнику, умеет отдельно
+фильтровать производящие и потребляющие ресурс объекты, показывает ограничения
+исследований и климата, а также поддерживает избранное. Совместимые пакеты
+Tesmio распознаются автоматически по компонентам загрузчика — отдельная запись
+для каждого здания не требуется. Полные списки ресурсов доступны во всплывающих
+подсказках. Модовые названия не переводятся искусственно — используются
+названия авторов модов.
 
 ## License
 
