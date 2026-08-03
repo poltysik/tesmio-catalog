@@ -12,6 +12,11 @@ if (-not (Test-Path -LiteralPath $compiler)) {
 $out = Join-Path $PSScriptRoot "build"
 New-Item -ItemType Directory -Force -Path $out | Out-Null
 
+$legacyOutput = Join-Path $out "tesmiomenu.dll"
+if (Test-Path -LiteralPath $legacyOutput) {
+    Remove-Item -LiteralPath $legacyOutput -Force
+}
+
 $optimization = if ($Configuration -eq "Debug") { "-O0" } else { "-O2" }
 & $compiler `
     -std=c++17 $optimization -g0 -DNDEBUG `
@@ -20,8 +25,8 @@ $optimization = if ($Configuration -eq "Debug") { "-O0" } else { "-O2" }
     -shared -static `
     -I (Join-Path $PSScriptRoot "include") `
     (Join-Path $PSScriptRoot "src\tesmiomenu.cpp") `
-    -o (Join-Path $out "tesmiomenu.dll") `
-    -lkernel32 -luser32
+    -o (Join-Path $out "TesmioCatalog.dll") `
+    -lkernel32 -luser32 -lgdi32
 
 if ($LASTEXITCODE -ne 0) { throw "Compiler exited with code $LASTEXITCODE" }
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot "tesmiomenu.ini") -Destination $out -Force
