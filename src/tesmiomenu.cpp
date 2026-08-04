@@ -305,6 +305,7 @@ static bool g_catalogNativeReady = false;
 static void* g_catalogTexture = NULL;
 static void* g_catalogSolidTexture = NULL;
 static void* g_favoriteTexture = NULL;
+static void* g_centeredLockTextures[16] = {};
 static void* g_bottomMenuController = NULL;
 static float g_catalogX = -1.0f;
 static float g_catalogY = -1.0f;
@@ -341,6 +342,7 @@ static void ResetCatalogTextureState()
     g_catalogTexture = NULL;
     g_catalogSolidTexture = NULL;
     g_favoriteTexture = NULL;
+    memset(g_centeredLockTextures, 0, sizeof(g_centeredLockTextures));
     for (int i = 0; i < g_catalogItemCount; ++i)
     {
         g_catalogItems[i].previewTexture = NULL;
@@ -3527,6 +3529,27 @@ static bool LoadCatalogTextures()
         g_catalogSolidTexture = LoadNativeTexture("editor/white.png");
     if (!g_favoriteTexture)
         g_favoriteTexture = LoadNativeTexture("editor/favorite.png");
+    static const char* centeredLockPaths[16] = {
+        "editor/tesmio_catalog_locks/locked_pollution.png",
+        "editor/tesmio_catalog_locks/locked_education.png",
+        "editor/tesmio_catalog_locks/locked_crime.png",
+        "editor/tesmio_catalog_locks/locked_power.png",
+        "editor/tesmio_catalog_locks/locked_powerfuel.png",
+        "editor/tesmio_catalog_locks/locked_fires.png",
+        "editor/tesmio_catalog_locks/locked_heating.png",
+        "editor/tesmio_catalog_locks/locked_seasons.png",
+        "editor/tesmio_catalog_locks/locked_waste.png",
+        "editor/tesmio_catalog_locks/locked_water.png",
+        "editor/tesmio_catalog_locks/locked_traffic.png",
+        "editor/tesmio_catalog_locks/locked_maintenance.png",
+        "editor/tesmio_catalog_locks/locked_dlc.png",
+        "editor/tesmio_catalog_locks/locked_demolition.png",
+        "editor/tesmio_catalog_locks/locked_dlc.png",
+        "editor/tesmio_catalog_locks/locked_terrain.png"
+    };
+    for (int i = 0; i < 16; ++i)
+        if (!g_centeredLockTextures[i])
+            g_centeredLockTextures[i] = LoadNativeTexture(centeredLockPaths[i]);
     if (!g_catalogTexture || !g_catalogSolidTexture) return false;
     return true;
 }
@@ -4819,6 +4842,53 @@ static int CatalogLockTextId(int reason)
     }
 }
 
+static int CatalogLockReasonFromTextId(int textId)
+{
+    for (int reason = 1; reason <= 16; ++reason)
+        if (CatalogLockTextId(reason) == textId) return reason;
+    return 0;
+}
+
+static int CatalogLockReasonFromItem(const CatalogItem& item)
+{
+    const char* values[] = {
+        item.toolName, item.descriptorPath, item.metadata.type
+    };
+    for (int i = 0; i < 3; ++i)
+    {
+        const char* value = values[i];
+        if (!value || !value[0]) continue;
+        if (AsciiContainsNoCase(value, "demolition")) return 14;
+        if (AsciiContainsNoCase(value, "fire")) return 6;
+        if (AsciiContainsNoCase(value, "fuel") ||
+            AsciiContainsNoCase(value, "refuel")) return 5;
+        if (AsciiContainsNoCase(value, "heating")) return 7;
+        if (AsciiContainsNoCase(value, "sewage") ||
+            AsciiContainsNoCase(value, "water")) return 10;
+        if (AsciiContainsNoCase(value, "waste") ||
+            AsciiContainsNoCase(value, "garbage")) return 9;
+        if (AsciiContainsNoCase(value, "maintenance") ||
+            AsciiContainsNoCase(value, "repair")) return 12;
+        if (AsciiContainsNoCase(value, "traffic") ||
+            AsciiContainsNoCase(value, "road_sign")) return 11;
+        if (AsciiContainsNoCase(value, "school") ||
+            AsciiContainsNoCase(value, "university") ||
+            AsciiContainsNoCase(value, "education")) return 2;
+        if (AsciiContainsNoCase(value, "police") ||
+            AsciiContainsNoCase(value, "prison") ||
+            AsciiContainsNoCase(value, "crime")) return 3;
+        if (AsciiContainsNoCase(value, "pollution")) return 1;
+        if (AsciiContainsNoCase(value, "electric") ||
+            AsciiContainsNoCase(value, "eletric") ||
+            AsciiContainsNoCase(value, "power")) return 4;
+        if (AsciiContainsNoCase(value, "snow") ||
+            AsciiContainsNoCase(value, "season")) return 8;
+        if (AsciiContainsNoCase(value, "terrain") ||
+            AsciiContainsNoCase(value, "landscape")) return 16;
+    }
+    return 0;
+}
+
 static void CatalogAvailabilityMessage(const CatalogAvailabilityInfo& info,
                                        wchar_t* destination, size_t capacity)
 {
@@ -4851,15 +4921,6 @@ static void CatalogAvailabilityMessage(const CatalogAvailabilityInfo& info,
             wcsncat_s(destination, capacity, L", ", _TRUNCATE);
         wcsncat_s(destination, capacity, name, _TRUNCATE);
     }
-}
-
-static void* CatalogLockTexture(int reason)
-{
-    if (reason < 1 || reason > 16) return NULL;
-    unsigned char* slot = g_base + G_GAME + 0x13E50 + (reason - 1) * sizeof(void*);
-    if (!H->readablePtr(slot, sizeof(void*))) return NULL;
-    void* texture = *(void**)slot;
-    return IsNativeTexture(texture) ? texture : NULL;
 }
 
 static int CatalogItemAvailability(const CatalogItem& item)
@@ -5172,14 +5233,42 @@ static void DrawNativeCatalog()
             NativeDrawTexture(g_catalogSolidTexture, imageX, imageY,
                               imageWidth, imageHeight,
                               0.95f, 0.95f, 0.93f, 0.34f);
-            void* lockTexture = availability.settingsReason
-                ? CatalogLockTexture(availability.settingsReason)
-                : availability.researchTexture;
-            if (lockTexture)
-                NativeDrawTexture(lockTexture,
-                                  imageX + imageWidth * 0.5f - 26.0f,
-                                  imageY + imageHeight * 0.5f - 26.0f,
-                                  52.0f, 52.0f, 1.0f, 1.0f, 1.0f, 0.96f);
+            int cornerPictogramReason = availability.settingsReason;
+            if (!cornerPictogramReason)
+            {
+                for (int i = 0; i < availability.researchCount && i < 4; ++i)
+                {
+                    cornerPictogramReason = CatalogLockReasonFromTextId(
+                        availability.researchNameIds[i]);
+                    if (cornerPictogramReason) break;
+                }
+            }
+            if (!cornerPictogramReason)
+                cornerPictogramReason = CatalogLockReasonFromItem(item);
+            void* centeredPictogram = cornerPictogramReason >= 1 &&
+                                      cornerPictogramReason <= 16
+                ? g_centeredLockTextures[cornerPictogramReason - 1]
+                : NULL;
+            if (centeredPictogram)
+            {
+                const float pictogramSize = 48.0f;
+                NativeDrawTexture(
+                    centeredPictogram,
+                    imageX + imageWidth * 0.5f - pictogramSize * 0.5f,
+                    imageY + imageHeight * 0.5f - pictogramSize * 0.5f,
+                    pictogramSize, pictogramSize,
+                    1.0f, 1.0f, 1.0f, 0.98f);
+            }
+            else if (availability.researchTexture)
+            {
+                const float researchSize = 52.0f;
+                NativeDrawTexture(
+                    availability.researchTexture,
+                    imageX + imageWidth * 0.5f - researchSize * 0.5f,
+                    imageY + imageHeight * 0.5f - researchSize * 0.5f,
+                    researchSize, researchSize,
+                    1.0f, 1.0f, 1.0f, 0.96f);
+            }
         }
 
         if (g_favoriteTexture)

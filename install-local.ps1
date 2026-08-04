@@ -28,5 +28,9 @@ if ($ForceConfig -or -not (Test-Path -LiteralPath (Join-Path $pluginDir "tesmiom
     Write-Output "Kept existing plugins\tesmiomenu.ini (use -ForceConfig to replace it)."
 }
 Copy-Item -LiteralPath (Join-Path $built "vfs\media_soviet\editor\bottomtab_tesmioloader.png") -Destination $vfsDir -Force
+$builtLocks = Join-Path $built "vfs\media_soviet\editor\tesmio_catalog_locks"
+$installedLocks = Join-Path $vfsDir "tesmio_catalog_locks"
+New-Item -ItemType Directory -Force -Path $installedLocks | Out-Null
+Copy-Item -Path (Join-Path $builtLocks "locked_*.png") -Destination $installedLocks -Force
 
 Write-Output "Installed Tesmio Catalog into $loader"

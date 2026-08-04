@@ -23,6 +23,10 @@ if (Test-Path -LiteralPath $legacyPlugin) {
 Copy-Item -LiteralPath (Join-Path $built "TesmioCatalog.dll") -Destination $pluginDir -Force
 Copy-Item -LiteralPath (Join-Path $built "tesmiomenu.ini") -Destination $pluginDir -Force
 Copy-Item -LiteralPath (Join-Path $built "vfs\media_soviet\editor\bottomtab_tesmioloader.png") -Destination $vfsDir -Force
+$builtLocks = Join-Path $built "vfs\media_soviet\editor\tesmio_catalog_locks"
+$releaseLocks = Join-Path $vfsDir "tesmio_catalog_locks"
+New-Item -ItemType Directory -Force -Path $releaseLocks | Out-Null
+Copy-Item -Path (Join-Path $builtLocks "locked_*.png") -Destination $releaseLocks -Force
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot "LICENSE") -Destination $releaseRoot -Force
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot "GUIDE-RU.md") -Destination $releaseRoot -Force
 

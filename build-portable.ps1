@@ -34,5 +34,9 @@ Copy-Item -LiteralPath (Join-Path $PSScriptRoot "tesmiomenu.ini") -Destination $
 $vfs = Join-Path $out "vfs\media_soviet\editor"
 New-Item -ItemType Directory -Force -Path $vfs | Out-Null
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot "assets\bottomtab_tesmioloader.png") -Destination $vfs -Force
+$lockSource = Join-Path $PSScriptRoot "assets\lock-icons"
+$lockDestination = Join-Path $vfs "tesmio_catalog_locks"
+New-Item -ItemType Directory -Force -Path $lockDestination | Out-Null
+Copy-Item -Path (Join-Path $lockSource "locked_*.png") -Destination $lockDestination -Force
 
 Get-ChildItem -LiteralPath $out -Recurse | Select-Object FullName, Length
