@@ -45,7 +45,7 @@ catalog build.
 3. For the Workshop copy, open:
 
    ```text
-   Steam\steamapps\workshop\content\784150\3777797010
+   Steam\steamapps\workshop\content\784150\3778262655
    ```
 
 4. Recommended: run `INSTALL-TESMIO-CATALOG.bat` from the item folder. The

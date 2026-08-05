@@ -33,7 +33,7 @@ Tesmio Catalog добавляет отдельную вкладку строит
 1. Установите TesmioLoader по инструкции его автора.
 2. Подпишитесь на Tesmio Catalog.
 3. Откройте папку загруженного предмета:
-[code]Steam\steamapps\workshop\content\784150\3777797010[/code]
+[code]Steam\steamapps\workshop\content\784150\3778262655[/code]
 4. Рекомендуемый способ: запустите INSTALL-TESMIO-CATALOG.bat из папки предмета. Он установит DLL и VFS-файлы и проверит изображение кнопки.
 5. При ручной установке перенесите целую папку plugins в:
 [code]SovietRepublic\tesmioloader\build[/code]

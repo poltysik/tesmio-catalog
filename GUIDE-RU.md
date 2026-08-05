@@ -37,7 +37,7 @@ TesmioLoader может потребоваться новая сборка ка�
 3. Для версии из Workshop откройте:
 
    ```text
-   Steam\steamapps\workshop\content\784150\3777797010
+   Steam\steamapps\workshop\content\784150\3778262655
    ```
 
 4. Рекомендуемый способ: запустите `INSTALL-TESMIO-CATALOG.bat` из папки
