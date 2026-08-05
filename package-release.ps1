@@ -31,6 +31,7 @@ Copy-Item -LiteralPath (Join-Path $PSScriptRoot "LICENSE") -Destination $release
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot "GUIDE-RU.md") -Destination $releaseRoot -Force
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot "README.md") -Destination $releaseRoot -Force
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot "INSTALL-TESMIO-CATALOG.bat") -Destination $releaseRoot -Force
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot "WORKSHOP-DESCRIPTION.txt") -Destination $releaseRoot -Force
 
 $zip = Join-Path $PSScriptRoot "release\TesmioCatalog-$Version.zip"
 if (Test-Path -LiteralPath $zip) { Remove-Item -LiteralPath $zip -Force }
@@ -40,7 +41,8 @@ $packageFiles = @(
     (Join-Path $releaseRoot "LICENSE"),
     (Join-Path $releaseRoot "GUIDE-RU.md"),
     (Join-Path $releaseRoot "README.md"),
-    (Join-Path $releaseRoot "INSTALL-TESMIO-CATALOG.bat")
+    (Join-Path $releaseRoot "INSTALL-TESMIO-CATALOG.bat"),
+    (Join-Path $releaseRoot "WORKSHOP-DESCRIPTION.txt")
 )
 Compress-Archive -LiteralPath $packageFiles -DestinationPath $zip -CompressionLevel Optimal
 

@@ -176,6 +176,10 @@ notes are intentionally excluded from the repository.
 See [GUIDE-RU.md](GUIDE-RU.md) for the Russian installation and integration
 guide.
 
+The exact Steam Workshop description used for publishing is kept in
+[WORKSHOP-DESCRIPTION.txt](WORKSHOP-DESCRIPTION.txt). Keep it below Steam's
+8,000-byte description limit.
+
 ## Feedback
 
 This is the author's first mod. Please report bugs, compatibility issues and
