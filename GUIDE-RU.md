@@ -40,19 +40,25 @@ TesmioLoader может потребоваться новая сборка ка�
    Steam\steamapps\workshop\content\784150\3777797010
    ```
 
-4. Скопируйте содержимое папки `plugins` в:
+4. Рекомендуемый способ: запустите `INSTALL-TESMIO-CATALOG.bat` из папки
+   предмета. Установщик сам перенесёт плагин и VFS-файлы и проверит наличие
+   изображения кнопки в правильном месте.
+5. Для ручной установки:
+
+   - перенесите целую папку `plugins` в
+     `SovietRepublic\tesmioloader\build`;
+   - перенесите целую папку `vfs` в
+     `SovietRepublic\tesmioloader`;
+   - согласитесь на объединение папок и замену файлов.
+
+   Не переносите папку `vfs` внутрь уже открытой
+   `tesmioloader\vfs`. Иначе получится ошибочный путь
+   `tesmioloader\vfs\vfs`, а кнопка каталога останется без картинки.
+   Итоговый путь иконки должен быть:
 
    ```text
-   SovietRepublic\tesmioloader\build\plugins
+   SovietRepublic\tesmioloader\vfs\media_soviet\editor\bottomtab_tesmioloader.png
    ```
-
-5. Объедините содержимое папки `vfs` с:
-
-   ```text
-   SovietRepublic\tesmioloader\vfs
-   ```
-
-   `vfs` находится рядом с папкой `build`, а не внутри неё.
 
 6. Запустите `tesmiolauncher.exe`, включите `TesmioCatalog.dll` и нажмите
    **Launch**.

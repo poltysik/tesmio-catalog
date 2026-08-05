@@ -29,10 +29,20 @@ New-Item -ItemType Directory -Force -Path $releaseLocks | Out-Null
 Copy-Item -Path (Join-Path $builtLocks "locked_*.png") -Destination $releaseLocks -Force
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot "LICENSE") -Destination $releaseRoot -Force
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot "GUIDE-RU.md") -Destination $releaseRoot -Force
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot "README.md") -Destination $releaseRoot -Force
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot "INSTALL-TESMIO-CATALOG.bat") -Destination $releaseRoot -Force
 
 $zip = Join-Path $PSScriptRoot "release\TesmioCatalog-$Version.zip"
 if (Test-Path -LiteralPath $zip) { Remove-Item -LiteralPath $zip -Force }
-Compress-Archive -LiteralPath $pluginDir, (Join-Path $releaseRoot "vfs"), (Join-Path $releaseRoot "LICENSE"), (Join-Path $releaseRoot "GUIDE-RU.md") -DestinationPath $zip -CompressionLevel Optimal
+$packageFiles = @(
+    $pluginDir,
+    (Join-Path $releaseRoot "vfs"),
+    (Join-Path $releaseRoot "LICENSE"),
+    (Join-Path $releaseRoot "GUIDE-RU.md"),
+    (Join-Path $releaseRoot "README.md"),
+    (Join-Path $releaseRoot "INSTALL-TESMIO-CATALOG.bat")
+)
+Compress-Archive -LiteralPath $packageFiles -DestinationPath $zip -CompressionLevel Optimal
 
 Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $pluginDir "TesmioCatalog.dll"), $zip |
     Select-Object Path, Hash

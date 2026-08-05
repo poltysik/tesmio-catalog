@@ -48,19 +48,22 @@ catalog build.
    Steam\steamapps\workshop\content\784150\3777797010
    ```
 
-4. Copy the contents of `plugins` into:
+4. Recommended: run `INSTALL-TESMIO-CATALOG.bat` from the item folder. The
+   installer copies both the plugin and VFS assets and verifies that the button
+   icon reached the correct location.
+5. For a manual installation:
+
+   - copy the whole `plugins` folder into `SovietRepublic\tesmioloader\build`;
+   - copy the whole `vfs` folder into `SovietRepublic\tesmioloader`;
+   - approve folder merging and file replacement.
+
+   Do **not** copy `vfs` inside the existing `tesmioloader\vfs` folder. That
+   creates the invalid path `tesmioloader\vfs\vfs` and the catalog button
+   appears without its picture. The final icon path must be:
 
    ```text
-   SovietRepublic\tesmioloader\build\plugins
+   SovietRepublic\tesmioloader\vfs\media_soviet\editor\bottomtab_tesmioloader.png
    ```
-
-5. Merge the contents of `vfs` into:
-
-   ```text
-   SovietRepublic\tesmioloader\vfs
-   ```
-
-   `vfs` belongs beside the loader's `build` directory, not inside it.
 
 6. Run `tesmiolauncher.exe`, enable `TesmioCatalog.dll`, and press **Launch**.
 7. Fully restart the game through TesmioLauncher after installing or updating.
