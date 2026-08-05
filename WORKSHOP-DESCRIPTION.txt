@@ -1,7 +1,7 @@
 [h1]English documentation and source code[/h1]
 
 [b]The open-source code, detailed installation instructions in English, mod-author integration guide, and troubleshooting information are available on GitHub.[/b]
-[b]Open GitHub and search for this repository:[/b] [code]poltysik / tesmio-catalog[/code]
+[b]GitHub:[/b] [url=https://github.com/poltysik/tesmio-catalog]https://github.com/poltysik/tesmio-catalog[/url]
 
 [h1]Tesmio Catalog — единый каталог строительства[/h1]
 
