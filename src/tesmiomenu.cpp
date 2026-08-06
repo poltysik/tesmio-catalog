@@ -56,6 +56,7 @@ static const size_t TOOL_PREVIEW_PATH = 0xB4;
 static const size_t BUILDING_TYPE_SCAN = 0xBE8;
 
 static const int DEFAULT_TEXT_ID = 1200001;
+static const char* const CATALOG_UNDEFINED_TYPE = "__tesmio_undefined";
 // The custom tab becomes the new standalone group 0. Vanilla groups are
 // shifted from 0..5 to 1..6 after their initializer has completed.
 static const int DEFAULT_GROUP = 0;
@@ -1269,6 +1270,15 @@ static void RefreshCatalogTypeLabels()
 {
     for (int i = 0; i < g_catalogTypeCount; ++i)
     {
+        if (strcmp(g_catalogTypes[i].name, CATALOG_UNDEFINED_TYPE) == 0)
+        {
+            wcscpy_s(g_catalogTypes[i].display,
+                     sizeof(g_catalogTypes[i].display) / sizeof(wchar_t),
+                     g_catalogLanguage == CATALOG_LANGUAGE_RUSSIAN
+                         ? L"\u041d\u0435 \u043e\u043f\u0440\u0435\u0434\u0435\u043b\u0435\u043d\u043e"
+                         : L"Undefined");
+            continue;
+        }
         if (!CatalogTextById(g_catalogTypes[i].textId,
                              g_catalogTypes[i].display,
                              sizeof(g_catalogTypes[i].display) / sizeof(wchar_t)))
@@ -1386,6 +1396,24 @@ static void CaptureCatalogTypes()
             --j;
         }
         g_catalogTypes[j + 1] = value;
+    }
+
+    // Keep an explicit final bucket for physical Workshop/loader buildings
+    // which the game did not assign to any native construction section.  A
+    // missing classification must never silently become the first native
+    // category (which used to label such buildings as Atomic industry).
+    if (g_catalogTypeCount < MAX_CATALOG_TYPES)
+    {
+        CatalogType& undefined = g_catalogTypes[g_catalogTypeCount++];
+        memset(&undefined, 0, sizeof(undefined));
+        strncpy_s(undefined.name, sizeof(undefined.name),
+                  CATALOG_UNDEFINED_TYPE, _TRUNCATE);
+        undefined.textId = 0;
+        wcscpy_s(undefined.display,
+                 sizeof(undefined.display) / sizeof(wchar_t),
+                 g_catalogLanguage == CATALOG_LANGUAGE_RUSSIAN
+                     ? L"\u041d\u0435 \u043e\u043f\u0440\u0435\u0434\u0435\u043b\u0435\u043d\u043e"
+                     : L"Undefined");
     }
     g_selectedType = 0;
     H->log("tesmiomenu  catalog: %d native build subcategories indexed",
@@ -2369,6 +2397,8 @@ static int ExistingCatalogItem(void* tool)
     return -1;
 }
 
+static int InferCatalogTypeIndex(const CatalogItemMetadata& metadata);
+
 static void AddCatalogItem(void* tool, int typeIndex, bool forceTesmio)
 {
     if (!tool || typeIndex < 0 || typeIndex >= g_catalogTypeCount) return;
@@ -2426,6 +2456,20 @@ static void AddCatalogItem(void* tool, int typeIndex, bool forceTesmio)
                         sizeof(item.display) / sizeof(wchar_t));
     if (foundDescriptor)
         ParseCatalogDescriptor(item, descriptor);
+    if (strcmp(g_catalogTypes[item.typeIndex].name,
+               CATALOG_UNDEFINED_TYPE) == 0)
+    {
+        int inferredType = InferCatalogTypeIndex(item.metadata);
+        if (inferredType >= 0)
+        {
+            item.typeIndex = inferredType;
+            strncpy_s(item.metadata.type, sizeof(item.metadata.type),
+                      g_catalogTypes[inferredType].name, _TRUNCATE);
+            if (g_probe)
+                H->log("tesmiomenu  catalog: inferred type %s for %s",
+                       g_catalogTypes[inferredType].name, item.toolName);
+        }
+    }
     ApplyVanillaToolCaption(item);
     InferCatalogFunctionalConsumption(item);
     ApplyCatalogItemLanguageOverrides(item);
@@ -2439,7 +2483,7 @@ static int FindCatalogTypeIndex(const char* name)
 {
     for (int i = 0; i < g_catalogTypeCount; ++i)
         if (_stricmp(g_catalogTypes[i].name, name) == 0) return i;
-    return g_catalogTypeCount ? 0 : -1;
+    return -1;
 }
 
 static int FindCatalogTypeIndexByTextId(int textId)
@@ -2447,6 +2491,62 @@ static int FindCatalogTypeIndexByTextId(int textId)
     for (int i = 0; i < g_catalogTypeCount; ++i)
         if (g_catalogTypes[i].textId == textId) return i;
     return -1;
+}
+
+static const char* CatalogRootResourceTemplate(const char* resource)
+{
+    if (!resource || !resource[0]) return NULL;
+    const char* current = resource;
+    for (int depth = 0; depth < 8; ++depth)
+    {
+        int index = CatalogResourceIndex(current);
+        if (index < 0) break;
+        const char* resourceTemplate = g_catalogResources[index].templateName;
+        if (!resourceTemplate[0] || _stricmp(resourceTemplate, current) == 0)
+            break;
+        current = resourceTemplate;
+    }
+    return current;
+}
+
+static int ResourceIndustryTextId(const char* resource)
+{
+    const char* root = CatalogRootResourceTemplate(resource);
+    if (!root) return -1;
+
+    // These are unambiguous production families in the stock game.  New
+    // Tesmio resources inherit the family of their declared template, so a
+    // copper chain cloned from iron/bauxite/steel/aluminium is classified as
+    // metallurgy without requiring cooperation from the Workshop author.
+    static const char* metallurgy[] = {
+        "rawiron", "iron", "steel", "rawbauxite", "bauxite", "alumina",
+        "aluminium"
+    };
+    for (size_t i = 0; i < sizeof(metallurgy) / sizeof(metallurgy[0]); ++i)
+        if (_stricmp(root, metallurgy[i]) == 0) return 67082;
+
+    static const char* nuclear[] = {
+        "uranium", "yellowcake", "uf6", "nuclearfuel", "nuclearfuelburned"
+    };
+    for (size_t i = 0; i < sizeof(nuclear) / sizeof(nuclear[0]); ++i)
+        if (_stricmp(root, nuclear[i]) == 0) return 67083;
+
+    return -1;
+}
+
+static int InferCatalogTypeIndex(const CatalogItemMetadata& metadata)
+{
+    int inferredTextId = -1;
+    for (int i = 0; i < metadata.produceCount; ++i)
+    {
+        int resourceTextId = ResourceIndustryTextId(metadata.produces[i]);
+        if (resourceTextId < 0) continue;
+        if (inferredTextId >= 0 && inferredTextId != resourceTextId)
+            return -1;
+        inferredTextId = resourceTextId;
+    }
+    return inferredTextId >= 0
+        ? FindCatalogTypeIndexByTextId(inferredTextId) : -1;
 }
 
 static void RemoveEmptyCatalogTypes()
@@ -2559,13 +2659,16 @@ static void CaptureCatalogItems()
         }
     }
 
-    // A loader-powered building can exist in the engine's global tool registry
-    // without being assigned to any stock bottom-menu group. Scan that registry
-    // as a second source and retain only tools loaded through Tesmio's manual
-    // channel. Resource usage is deliberately not a source signal: a normal
-    // Steam Workshop building may consume a Tesmio resource and must still
-    // remain classified as Workshop.
-    int tesmioType = FindCatalogTypeIndex("advindustry");
+    // A physical building can exist in the engine's global tool registry
+    // without being assigned to a stock bottom-menu group.  This happens for
+    // Workshop packages that use a custom/unknown subcategory and was the
+    // reason their resources appeared in the filters while their cards were
+    // missing.  Scan the registry as a second source and retain both missing
+    // Workshop buildings and loader-powered Tesmio buildings.  Their source
+    // remains distinct: merely consuming a Tesmio resource never turns a
+    // normal Workshop building into a Tesmio package.
+    int undefinedType = FindCatalogTypeIndex(CATALOG_UNDEFINED_TYPE);
+    int discoveredWorkshop = 0;
     int discoveredTesmio = 0;
     RawVector* allTools = (RawVector*)(g_base + G_GAME + TOOL_VECTOR);
     if (H->readablePtr(allTools, sizeof(*allTools)) && allTools->begin &&
@@ -2580,23 +2683,30 @@ static void CaptureCatalogItems()
             {
                 void* tool = allTools->begin + toolIndex * TOOL_SIZE;
                 if (ExistingCatalogItem(tool) >= 0) continue;
+                if (!H->readablePtr((unsigned char*)tool + TOOL_BUILDING,
+                                    sizeof(void*)) ||
+                    !*(void**)((unsigned char*)tool + TOOL_BUILDING))
+                    continue;
                 int before = g_catalogItemCount;
-                AddCatalogItem(tool, tesmioType, false);
+                AddCatalogItem(tool, undefinedType, false);
                 if (g_catalogItemCount == before) continue;
                 if (g_catalogItems[before].source == CATALOG_SOURCE_TESMIO)
                     ++discoveredTesmio;
+                else if (g_catalogItems[before].source ==
+                         CATALOG_SOURCE_WORKSHOP)
+                    ++discoveredWorkshop;
                 else
                     g_catalogItemCount = before;
             }
         }
     }
-    H->log("tesmiomenu  catalog: %d ungrouped Tesmio tool(s) discovered",
-           discoveredTesmio);
+    H->log("tesmiomenu  catalog: %d ungrouped Workshop and %d Tesmio tool(s) discovered",
+           discoveredWorkshop, discoveredTesmio);
 
-    // Explicitly configured legacy structures remain supported. Assign them to
-    // Advanced industry until descriptor-to-tab mapping is expanded.
+    // Explicitly configured legacy structures remain supported.  Without a
+    // proven native category they belong to the same honest fallback bucket.
     for (int i = 0; i < g_catalogBuildingCount; ++i)
-        AddCatalogItem(g_catalogBuildingTools[i], tesmioType, true);
+        AddCatalogItem(g_catalogBuildingTools[i], undefinedType, true);
 
     RemoveEmptyCatalogTypes();
 
@@ -5575,7 +5685,7 @@ extern "C" __declspec(dllexport) int TsmPluginInit(const TsmHost* host, TsmPlugi
     H = host;
     g_base = host->exeBase;
     info->name = "Tesmio Catalog";
-    info->version = "1.0.0";
+    info->version = "1.1.0";
     ReadSettings();
     LoadEnglishTextTable();
     LoadRussianTextTable();

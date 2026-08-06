@@ -1,4 +1,4 @@
-# Tesmio Catalog 1.0
+# Tesmio Catalog 1.1
 
 Tesmio Catalog is an in-game construction browser for **Workers & Resources:
 Soviet Republic**, implemented as a
@@ -16,6 +16,10 @@ content. The catalog itself bundles no third-party buildings or resources.
 - Filters by object type, resource and source: Vanilla, Workshop or Tesmio.
 - `Produces` and `Consumes` relations for the selected resource.
 - Runtime discovery of TesmioLoader resources and compatible buildings.
+- Secondary discovery of physical Workshop buildings omitted from the stock
+  construction-menu groups.
+- Safe `Undefined` category and conservative industry inference for custom
+  resource production chains.
 - Favorites, pagination and an `Only Available` mode.
 - Preview cards with type, source, production and consumption metadata.
 - Opaque hover tooltips for resource lists that do not fit on a card.
@@ -159,7 +163,7 @@ Place an `llvm-mingw` toolchain in `tools/llvm-mingw`, then run:
 
 ```powershell
 .\build-portable.ps1
-.\package-release.ps1 -Version 1.0.0
+.\package-release.ps1 -Version 1.1.0
 ```
 
 For local installation into the default Steam directory:

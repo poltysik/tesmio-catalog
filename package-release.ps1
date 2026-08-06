@@ -1,5 +1,5 @@
 param(
-    [string]$Version = "1.0.0"
+    [string]$Version = "1.1.0"
 )
 
 $ErrorActionPreference = "Stop"
@@ -30,6 +30,7 @@ Copy-Item -Path (Join-Path $builtLocks "locked_*.png") -Destination $releaseLock
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot "LICENSE") -Destination $releaseRoot -Force
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot "GUIDE-RU.md") -Destination $releaseRoot -Force
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot "README.md") -Destination $releaseRoot -Force
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot "CHANGELOG.md") -Destination $releaseRoot -Force
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot "INSTALL-TESMIO-CATALOG.bat") -Destination $releaseRoot -Force
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot "WORKSHOP-DESCRIPTION.txt") -Destination $releaseRoot -Force
 
@@ -41,6 +42,7 @@ $packageFiles = @(
     (Join-Path $releaseRoot "LICENSE"),
     (Join-Path $releaseRoot "GUIDE-RU.md"),
     (Join-Path $releaseRoot "README.md"),
+    (Join-Path $releaseRoot "CHANGELOG.md"),
     (Join-Path $releaseRoot "INSTALL-TESMIO-CATALOG.bat"),
     (Join-Path $releaseRoot "WORKSHOP-DESCRIPTION.txt")
 )
