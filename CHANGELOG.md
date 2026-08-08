@@ -1,5 +1,49 @@
 # Changelog
 
+## 1.2.0 — Toolbar hitbox and catalog performance update
+
+### Русский
+
+Версия 1.2 исправляет невидимую область нажатия над кнопкой каталога и
+уменьшает нагрузку при просмотре большого числа построек из базовой игры и
+Steam Workshop.
+
+#### Исправлено
+
+- Удалена расширенная невидимая область нажатия над нижней строительной
+  панелью. Каталог теперь открывается только при нажатии на его видимую кнопку.
+- Обработка кнопки передана штатной системе попадания интерфейса игры, поэтому
+  её активная область совпадает с изображением при разных разрешениях и
+  масштабах UI.
+- Устранён постоянный повтор тяжёлой проверки доступности и исследований у
+  видимых карточек на каждом кадре.
+- Уменьшены продолжительные просадки производительности при просмотре и
+  переключении источников `Базовая игра` и `Workshop`.
+
+Проверка доступности теперь сохраняется в кэше на время текущего сеанса
+каталога и обновляется при его повторном открытии. Первичная загрузка ранее не
+просмотренных изображений всё ещё может вызвать короткую разовую задержку.
+
+### English
+
+Version 1.2 removes an invisible clickable area above the catalog button and
+reduces the cost of browsing large Vanilla and Steam Workshop collections.
+
+#### Fixed
+
+- Removed the oversized invisible hitbox above the bottom construction
+  toolbar. The catalog now opens only from its visible button.
+- Delegated button hit testing to the game's native UI, keeping the active
+  area aligned with the icon at different resolutions and UI scales.
+- Stopped repeating the expensive availability and research checks for visible
+  cards on every frame.
+- Reduced sustained performance drops while browsing or switching between the
+  `Vanilla buildings` and `Workshop buildings` sources.
+
+Availability details are now cached for the current catalog session and
+refreshed when the catalog is reopened. Loading previously unseen preview
+images may still cause a short one-time delay.
+
 ## 1.1.0 — Workshop compatibility update
 
 ### Русский

@@ -1,4 +1,4 @@
-# Tesmio Catalog 1.1
+# Tesmio Catalog 1.2
 
 Tesmio Catalog is an in-game construction browser for **Workers & Resources:
 Soviet Republic**, implemented as a
@@ -163,7 +163,7 @@ Place an `llvm-mingw` toolchain in `tools/llvm-mingw`, then run:
 
 ```powershell
 .\build-portable.ps1
-.\package-release.ps1 -Version 1.1.0
+.\package-release.ps1 -Version 1.2.0
 ```
 
 For local installation into the default Steam directory:

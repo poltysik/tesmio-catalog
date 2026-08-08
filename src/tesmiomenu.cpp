@@ -131,6 +131,10 @@ struct CatalogItem
     bool favorite;
     bool availableCached;
     unsigned availabilityCacheEpoch;
+    int availabilitySettingsReason;
+    int availabilityResearchCount;
+    int availabilityResearchNameIds[4];
+    void* availabilityResearchTexture;
     CatalogItemMetadata metadata;
 };
 
@@ -316,7 +320,6 @@ static float g_catalogDragY = 0.0f;
 static bool g_mouseWasDown = false;
 static bool g_escapeWasDown = false;
 static bool g_toolbarToggleLatch = false;
-static bool g_toolbarMouseWasDown = false;
 static bool g_suppressCustomSelection = false;
 static int g_openDropdown = 0;
 static int g_dropdownPage = 0;
@@ -3692,38 +3695,6 @@ static bool ReadGameMouse(int logicalWidth, int logicalHeight,
     return true;
 }
 
-static bool CustomToolbarButtonHovered(void* controller, float renderScale)
-{
-    if (!controller ||
-        !H->readablePtr((unsigned char*)controller + 0x78, 16))
-        return false;
-    int screenWidth = *(int*)(g_base + G_SCREEN_WIDTH);
-    int screenHeight = *(int*)(g_base + G_SCREEN_HEIGHT);
-    float mouseX = 0.0f;
-    float mouseY = 0.0f;
-    if (!ReadGameMouse(screenWidth, screenHeight, &mouseX, &mouseY))
-        return false;
-
-    float toolbarX = *(float*)((unsigned char*)controller + 0x78);
-    float toolbarYFromBottom = *(float*)((unsigned char*)controller + 0x7C);
-    float toolbarHeight = *(float*)((unsigned char*)controller + 0x84);
-    float uiScale = *(float*)(g_base + 0x992088);
-    float buttonWidth = 60.0f * uiScale * renderScale;
-    if (!(buttonWidth >= 24.0f && buttonWidth <= 160.0f) ||
-        !(toolbarHeight >= 24.0f && toolbarHeight <= 180.0f) ||
-        !(toolbarX >= -100.0f && toolbarX <= screenWidth + 100.0f) ||
-        !(toolbarYFromBottom >= -100.0f &&
-          toolbarYFromBottom <= screenHeight + 100.0f))
-        return false;
-
-    // The bottom menu stores Y in the renderer's bottom-origin coordinate
-    // system, while the Windows cursor is measured from the top. Comparing
-    // those directly missed the real button and let Roads render for one frame.
-    float toolbarY = (float)screenHeight - toolbarYFromBottom - toolbarHeight;
-    return PointInside(mouseX, mouseY, toolbarX, toolbarY,
-                       buttonWidth, toolbarHeight);
-}
-
 static bool CatalogCursorInsideClient(HWND window)
 {
     if (!g_catalogVisible || !window || !IsWindow(window)) return false;
@@ -5044,10 +5015,31 @@ static bool CatalogItemAvailableCached(CatalogItem& item)
 {
     if (item.availabilityCacheEpoch != g_availabilityCacheEpoch)
     {
-        item.availableCached = CatalogItemAvailability(item) != 0;
+        CatalogAvailabilityInfo info = {};
+        CatalogItemAvailabilityInfo(item, &info);
+        item.availableCached = info.settingsReason == 0 &&
+                               info.researchCount == 0;
+        item.availabilitySettingsReason = info.settingsReason;
+        item.availabilityResearchCount = info.researchCount;
+        memcpy(item.availabilityResearchNameIds, info.researchNameIds,
+               sizeof(item.availabilityResearchNameIds));
+        item.availabilityResearchTexture = info.researchTexture;
         item.availabilityCacheEpoch = g_availabilityCacheEpoch;
     }
     return item.availableCached;
+}
+
+static void CatalogItemAvailabilityInfoCached(CatalogItem& item,
+                                              CatalogAvailabilityInfo* info)
+{
+    if (!info) return;
+    CatalogItemAvailableCached(item);
+    memset(info, 0, sizeof(*info));
+    info->settingsReason = item.availabilitySettingsReason;
+    info->researchCount = item.availabilityResearchCount;
+    memcpy(info->researchNameIds, item.availabilityResearchNameIds,
+           sizeof(info->researchNameIds));
+    info->researchTexture = item.availabilityResearchTexture;
 }
 
 static bool ActivateCatalogBuilding(const CatalogItem& item)
@@ -5306,7 +5298,7 @@ static void DrawNativeCatalog()
             SaveCatalogFavorite(item);
         }
         CatalogAvailabilityInfo availability = {};
-        CatalogItemAvailabilityInfo(item, &availability);
+        CatalogItemAvailabilityInfoCached(item, &availability);
         bool available = availability.settingsReason == 0 &&
                          availability.researchCount == 0;
         if (cardHovered && !available)
@@ -5553,28 +5545,17 @@ static void h_BottomMenuRender(void* self, float scale)
     RawVector* tabs = (RawVector*)(g_base + G_BOTTOM_TABS);
     unsigned char** selected = (unsigned char**)(g_base + G_SELECTED_BOTTOM_TAB);
     bool leftDown = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
-    bool toolbarPressed = leftDown && !g_toolbarMouseWasDown;
     bool validSelection = H->readablePtr(tabs, sizeof(*tabs)) && tabs->begin &&
                           H->readablePtr(selected, sizeof(*selected));
     unsigned char* customTab = validSelection ? FindCustomTab(tabs) : NULL;
     bool customSelected = customTab && *selected == customTab;
-    bool preemptedCustomClick = validSelection && !g_suppressCustomSelection &&
-        toolbarPressed && CustomToolbarButtonHovered(self, scale);
-    if (preemptedCustomClick)
-    {
-        ToggleCatalogFromToolbar();
-        g_toolbarToggleLatch = true;
-        g_suppressCustomSelection = true;
-        *selected = NULL;
-        *(unsigned char*)(g_base + G_CLICK_FLAG) = 0;
-    }
     if (g_suppressCustomSelection)
     {
         if (customSelected) *selected = NULL;
         *(unsigned char*)(g_base + G_CLICK_FLAG) = 0;
         if (!leftDown) g_suppressCustomSelection = false;
     }
-    else if (customSelected && !preemptedCustomClick)
+    else if (customSelected)
     {
         if (!g_toolbarToggleLatch)
             ToggleCatalogFromToolbar();
@@ -5602,6 +5583,21 @@ static void h_BottomMenuRender(void* self, float scale)
     if (validSelection && g_catalogVisible) *selected = NULL;
 
     o_BottomMenuRender(self, scale);
+    // Let the stock renderer perform its own exact hit test for the custom
+    // icon.  The previous manual rectangle used the height of the entire
+    // toolbar and created an invisible clickable area above the aeroplane
+    // button.  Handling the resulting native selection keeps the hitbox equal
+    // to the visible button at every resolution and UI scale.
+    bool customSelectedAfterRender = validSelection && customTab &&
+                                     *selected == customTab;
+    if (customSelectedAfterRender)
+    {
+        if (!g_suppressCustomSelection && !g_toolbarToggleLatch)
+            ToggleCatalogFromToolbar();
+        g_toolbarToggleLatch = true;
+        *selected = NULL;
+        *(unsigned char*)(g_base + G_CLICK_FLAG) = 0;
+    }
     if (validSelection && g_catalogVisible) *selected = NULL;
 
     bool escapeDown = (GetAsyncKeyState(VK_ESCAPE) & 0x8000) != 0;
@@ -5620,7 +5616,6 @@ static void h_BottomMenuRender(void* self, float scale)
         DrawNativeCatalog();
     else
         HideResourceTooltipWindow();
-    g_toolbarMouseWasDown = leftDown;
 }
 
 static bool ResolveNativeCatalogImports()
@@ -5663,7 +5658,6 @@ static void h_MenuInit(void)
     g_openDropdown = 0;
     g_pendingCatalogItem = -1;
     g_mouseWasDown = false;
-    g_toolbarMouseWasDown = false;
     g_toolbarToggleLatch = false;
     g_catalogX = -1.0f;
     g_catalogY = -1.0f;
@@ -5685,7 +5679,7 @@ extern "C" __declspec(dllexport) int TsmPluginInit(const TsmHost* host, TsmPlugi
     H = host;
     g_base = host->exeBase;
     info->name = "Tesmio Catalog";
-    info->version = "1.1.0";
+    info->version = "1.2.0";
     ReadSettings();
     LoadEnglishTextTable();
     LoadRussianTextTable();
