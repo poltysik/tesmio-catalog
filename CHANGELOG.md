@@ -1,5 +1,23 @@
 # Changelog
 
+## 1.2.1 — First-open input fix
+
+### Русский
+
+- Исправлено первое открытие каталога, при котором карточки зданий могли не
+  реагировать до закрытия и повторного открытия окна.
+- Нажатие на кнопку каталога теперь полностью отпускается до включения карточек.
+- Кэш доступности автоматически перепроверяется после первого полного кадра
+  штатного строительного меню.
+
+### English
+
+- Fixed the first catalog session occasionally ignoring building-card clicks
+  until the window was closed and reopened.
+- The toolbar click is now fully released before catalog controls are armed.
+- Availability is refreshed after the native construction menu completes its
+  first full frame.
+
 ## 1.2.0 — Toolbar hitbox and catalog performance update
 
 ### Русский

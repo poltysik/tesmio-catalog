@@ -318,6 +318,16 @@ static bool g_catalogDragging = false;
 static float g_catalogDragX = 0.0f;
 static float g_catalogDragY = 0.0f;
 static bool g_mouseWasDown = false;
+// The toolbar click that opens the catalog must be fully released before any
+// catalog control can react to a new press.  On the first opening the native
+// tab and our overlay are created during the same bottom-menu frame; accepting
+// input immediately can leave that first catalog session unable to arm a
+// building until the tab is opened again.
+static bool g_catalogInputArmed = false;
+// Availability is queried once more after the native bottom menu has completed
+// a full frame.  The first custom-tab frame can transiently report unresolved
+// tools/research and v1.2 cached that false result for the whole session.
+static int g_catalogAvailabilityWarmupFrames = 0;
 static bool g_escapeWasDown = false;
 static bool g_toolbarToggleLatch = false;
 static bool g_suppressCustomSelection = false;
@@ -5063,6 +5073,8 @@ static bool ActivateCatalogBuilding(const CatalogItem& item)
     controller[1] = 1;
     *(void**)(g_base + 0x9E2338) = NULL;
     g_catalogVisible = false;
+    g_catalogInputArmed = false;
+    g_catalogAvailabilityWarmupFrames = 0;
     g_openDropdown = 0;
     HideResourceTooltipWindow();
     g_suppressCustomSelection = true;
@@ -5099,7 +5111,28 @@ static void DrawNativeCatalog()
     float mouseY = -10000.0f;
     ReadGameMouse(screenWidth, screenHeight, &mouseX, &mouseY);
     bool leftDown = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
-    bool pressed = leftDown && !g_mouseWasDown;
+    bool pressed = false;
+    if (!g_catalogInputArmed)
+    {
+        // Consume the complete toolbar click, including its release.  The next
+        // physical press is the first one that belongs to the catalog.
+        g_mouseWasDown = leftDown;
+        if (!leftDown)
+        {
+            g_catalogInputArmed = true;
+            H->log("tesmiomenu  catalog input armed after opening click");
+        }
+    }
+    else
+        pressed = leftDown && !g_mouseWasDown;
+
+    if (g_catalogAvailabilityWarmupFrames > 0 &&
+        --g_catalogAvailabilityWarmupFrames == 0)
+    {
+        ++g_availabilityCacheEpoch;
+        if (!g_availabilityCacheEpoch) g_availabilityCacheEpoch = 1;
+        H->log("tesmiomenu  initial catalog availability cache refreshed");
+    }
 
     // Selecting a card and placing a building must never be the same physical
     // click. Keep the catalogue (and its input shield) alive until the mouse
@@ -5152,6 +5185,8 @@ static void DrawNativeCatalog()
     {
         g_pendingCatalogItem = -1;
         g_catalogVisible = false;
+        g_catalogInputArmed = false;
+        g_catalogAvailabilityWarmupFrames = 0;
         HideResourceTooltipWindow();
         *(unsigned char*)(g_base + G_CLICK_FLAG) = 0;
         g_mouseWasDown = leftDown;
@@ -5522,12 +5557,20 @@ static void DrawNativeCatalog()
 static void ToggleCatalogFromToolbar()
 {
     g_catalogVisible = !g_catalogVisible;
-    if (!g_catalogVisible) HideResourceTooltipWindow();
+    if (!g_catalogVisible)
+    {
+        HideResourceTooltipWindow();
+        g_catalogInputArmed = false;
+        g_catalogAvailabilityWarmupFrames = 0;
+    }
     g_catalogDragging = false;
     g_openDropdown = 0;
     g_pendingCatalogItem = -1;
     if (g_catalogVisible)
     {
+        g_catalogInputArmed = false;
+        g_catalogAvailabilityWarmupFrames = 2;
+        g_mouseWasDown = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
         ++g_availabilityCacheEpoch;
         if (!g_availabilityCacheEpoch) g_availabilityCacheEpoch = 1;
         g_resultPage = g_onlyFavorites
@@ -5576,6 +5619,8 @@ static void h_BottomMenuRender(void* self, float scale)
     {
         g_pendingCatalogItem = -1;
         g_catalogVisible = false;
+        g_catalogInputArmed = false;
+        g_catalogAvailabilityWarmupFrames = 0;
         HideResourceTooltipWindow();
         g_openDropdown = 0;
         H->log("tesmiomenu  native catalog closed by stock category");
@@ -5605,6 +5650,8 @@ static void h_BottomMenuRender(void* self, float scale)
     {
         g_pendingCatalogItem = -1;
         g_catalogVisible = false;
+        g_catalogInputArmed = false;
+        g_catalogAvailabilityWarmupFrames = 0;
         HideResourceTooltipWindow();
         g_catalogDragging = false;
         g_openDropdown = 0;
@@ -5658,6 +5705,8 @@ static void h_MenuInit(void)
     g_openDropdown = 0;
     g_pendingCatalogItem = -1;
     g_mouseWasDown = false;
+    g_catalogInputArmed = false;
+    g_catalogAvailabilityWarmupFrames = 0;
     g_toolbarToggleLatch = false;
     g_catalogX = -1.0f;
     g_catalogY = -1.0f;
@@ -5679,7 +5728,7 @@ extern "C" __declspec(dllexport) int TsmPluginInit(const TsmHost* host, TsmPlugi
     H = host;
     g_base = host->exeBase;
     info->name = "Tesmio Catalog";
-    info->version = "1.2.0";
+    info->version = "1.2.1";
     ReadSettings();
     LoadEnglishTextTable();
     LoadRussianTextTable();
