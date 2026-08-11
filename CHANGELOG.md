@@ -1,5 +1,36 @@
 # Changelog
 
+## 1.2.2 — WRSR 1.1.1.9 and TesmioLoader B0.3.6 compatibility
+
+### Русский
+
+- Tesmio Catalog адаптирован для Workers & Resources: Soviet Republic 1.1.1.9
+  и обновлённого TesmioLoader B0.3.6.
+- Обновлена привязка к штатной нижней строительной панели новой сборки игры.
+- Исправлено некорректное отображение карточек зданий: карточки, избранное и
+  навигация больше не накладываются друг на друга.
+- На более высоких экранах сохраняется сетка из четырёх карточек; высота
+  карточек автоматически подстраивается под доступное место.
+- Интерфейс проверен на разрешениях 1366×768, 1440×900, 1600×900,
+  1920×1080 и 2560×1440, включая нестандартный масштаб интерфейса.
+- Добавлена предварительная проверка отрисовщика панели: при будущей
+  несовместимости каталог отключится до внесения изменений в интерфейс игры.
+
+### English
+
+- Adapted Tesmio Catalog for Workers & Resources: Soviet Republic 1.1.1.9
+  and the updated TesmioLoader B0.3.6.
+- Updated the native bottom construction toolbar integration for the new game
+  build.
+- Fixed incorrect building-card rendering so cards, Favorites and pagination
+  no longer overlap.
+- Taller screens retain the four-card grid with card height fitted to the
+  available space.
+- Verified the interface at 1366×768, 1440×900, 1600×900, 1920×1080 and
+  2560×1440, including custom UI scaling.
+- Added a renderer preflight check so a future incompatible game build is
+  rejected before the catalog changes the native toolbar.
+
 ## 1.2.1 — First-open input fix
 
 ### Русский

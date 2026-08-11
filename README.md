@@ -1,4 +1,4 @@
-# Tesmio Catalog 1.2
+# Tesmio Catalog 1.2.2
 
 Tesmio Catalog is an in-game construction browser for **Workers & Resources:
 Soviet Republic**, implemented as a
@@ -29,8 +29,8 @@ content. The catalog itself bundles no third-party buildings or resources.
 
 ## Requirements and limitations
 
-- Workers & Resources: Soviet Republic `1.1.1.7`, 64-bit DX11 build.
-- TesmioLoader API 3 / launcher `b0.3.4`.
+- Workers & Resources: Soviet Republic `1.1.1.9`, 64-bit DX11 build.
+- TesmioLoader API 3 / launcher `B0.3.6`.
 - The game must be launched through `tesmiolauncher.exe`.
 
 The catalog only indexes content already loaded by the game. It does not add
@@ -163,7 +163,7 @@ Place an `llvm-mingw` toolchain in `tools/llvm-mingw`, then run:
 
 ```powershell
 .\build-portable.ps1
-.\package-release.ps1 -Version 1.2.1
+.\package-release.ps1 -Version 1.2.2
 ```
 
 For local installation into the default Steam directory:

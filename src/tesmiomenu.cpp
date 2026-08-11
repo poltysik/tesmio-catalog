@@ -1,7 +1,7 @@
 // TesmioMenu - a configurable bottom build-menu tab for TesmioLoader.
 //
-// Target game build: WRSR 1.1.1.7, SOVIET64.exe SHA-256
-// EC05BB6257DA31CFCAEC639C8462683EE7BCF26158E0751A29A2D48025169522
+// Target game build: WRSR 1.1.1.9.
+// 296644A9F207D609031FC2AE73FED2DCB34619A1D55A35D1C7B51965CE6841B8
 //
 // The game already stores bottom tabs in a std::vector-like array. This plugin
 // hooks the vanilla menu initializer, lets it build all 26 stock entries, then
@@ -26,12 +26,14 @@ static const char* INI = "plugins\\tesmiomenu.ini";
 static const char* ENGINE_DLL = "C3DDLL64.dll";
 static const char* GET_STRING = "?GetString@C3D_LANGUAGE@@QEAAPEA_WH@Z";
 
-// WRSR 1.1.1.7 RVAs.
+// WRSR 1.1.1.9 RVAs.
 static const uintptr_t P_MENU_INIT          = 0x051E30;
-static const uintptr_t P_BOTTOM_MENU_RENDER = 0x4D71F0;
+static const uintptr_t P_BOTTOM_MENU_RENDER = 0x4D72C0;
+static const uintptr_t P_CONSTRUCTION_RENDER = 0x07C400;
 static const uintptr_t P_TAB_INIT           = 0x079430;
 static const uintptr_t P_TAB_PUSH           = 0x08E3C0;
 static const uintptr_t P_TAB_CONSTRUCT      = 0x051CA0;
+static const uintptr_t P_BOTTOM_PAPER_LEFT  = 0x0814D8;
 static const uintptr_t P_FIRST_BAND_START   = 0x081794;
 static const uintptr_t P_GROUP_INIT         = 0x079500;
 static const uintptr_t P_GROUP_PUSH         = 0x08E500;
@@ -39,12 +41,13 @@ static const uintptr_t P_GROUP_CONSTRUCT    = 0x051B80;
 static const uintptr_t P_POINTER_PUSH       = 0x01DE20;
 static const uintptr_t P_INT_PUSH           = 0x01DF90;
 static const uintptr_t P_TOOL_FIND          = 0x03AAA0;
-static const uintptr_t P_RESEARCH_FOR_BUILDING = 0x2F7620;
-static const uintptr_t P_RESEARCH_FOR_TOOL  = 0x2F78C0;
+static const uintptr_t P_RESEARCH_FOR_BUILDING = 0x2F76C0;
+static const uintptr_t P_RESEARCH_FOR_TOOL  = 0x2F7960;
 static const uintptr_t G_BOTTOM_TABS        = 0x9E17D8;
 static const uintptr_t G_GAME               = 0x9D4F10;
 static const uintptr_t G_SELECTED_BOTTOM_TAB = G_BOTTOM_TABS + 0x18;
 static const uintptr_t G_LANDSCAPE_ROOT     = 0x9941F0;
+static const uintptr_t G_UI_SCALE           = 0x992088;
 
 static const size_t TAB_SIZE = 0xB0;
 static const size_t GROUP_SIZE = 0x30;
@@ -166,9 +169,12 @@ static int g_group = DEFAULT_GROUP;
 static int g_textId = DEFAULT_TEXT_ID;
 static int g_probe = 1;
 static int g_front = 1;
+static int g_bottomMenuLevel1Scale = 0;
 static wchar_t g_title[96] = L"Tesmio Catalog";
 static bool g_insideMenuInit = false;
 static bool g_nativeFrontInserted = false;
+static volatile LONG g_nativeBottomPaperLeftPixels = -1;
+static void* g_bottomPaperCode = NULL;
 static void* g_firstBandCode = NULL;
 static void* g_followingBandsCode = NULL;
 static CatalogResource g_catalogResources[MAX_CATALOG_RESOURCES];
@@ -309,6 +315,16 @@ static bool g_catalogVisible = false;
 static bool g_catalogNativeReady = false;
 static void* g_catalogTexture = NULL;
 static void* g_catalogSolidTexture = NULL;
+static void* g_toolbarTexture = NULL;
+struct CapturedPanelRect
+{
+    float left, top, right, bottom;
+};
+static bool g_captureBottomPanels = false;
+static CapturedPanelRect g_bottomPanels[512] = {};
+static int g_bottomPanelCount = 0;
+static CapturedPanelRect g_nativeBottomPaper = {};
+static bool g_nativeBottomPaperValid = false;
 static void* g_favoriteTexture = NULL;
 static void* g_centeredLockTextures[16] = {};
 static void* g_bottomMenuController = NULL;
@@ -330,6 +346,7 @@ static bool g_catalogInputArmed = false;
 static int g_catalogAvailabilityWarmupFrames = 0;
 static bool g_escapeWasDown = false;
 static bool g_toolbarToggleLatch = false;
+static bool g_toolbarMouseWasDown = false;
 static bool g_suppressCustomSelection = false;
 static int g_openDropdown = 0;
 static int g_dropdownPage = 0;
@@ -342,6 +359,11 @@ static WNDPROC g_originalGameWindowProc = NULL;
 static bool g_shieldLeftButton = false;
 static bool g_shieldRightButton = false;
 static bool g_shieldMiddleButton = false;
+static bool g_standaloneButtonCapture = false;
+static volatile LONG g_standaloneToggleRequested = 0;
+static float g_standaloneButtonX = -1.0f;
+static float g_standaloneButtonY = -1.0f;
+static float g_standaloneButtonSize = 0.0f;
 typedef void (*t_InputRefreshData)(void*, HWND, void*);
 static t_InputRefreshData o_InputRefreshData = NULL;
 
@@ -355,6 +377,7 @@ static void ResetCatalogTextureState()
 {
     g_catalogTexture = NULL;
     g_catalogSolidTexture = NULL;
+    g_toolbarTexture = NULL;
     g_favoriteTexture = NULL;
     memset(g_centeredLockTextures, 0, sizeof(g_centeredLockTextures));
     for (int i = 0; i < g_catalogItemCount; ++i)
@@ -841,6 +864,18 @@ static bool ProbeBuild()
         0x48,0x89,0x5C,0x24,0x08,0x57,0x48,0x83,0xEC,0x20,
         0x48,0x8B,0x41,0x08
     };
+    static const unsigned char bottomMenuRender[] = {
+        0x48,0x8B,0xC4,0x55,0x53,0x48,0x8D,0x68,
+        0xE8,0x48,0x81,0xEC,0x08,0x01,0x00,0x00
+    };
+    static const unsigned char researchForBuilding[] = {
+        0x4C,0x8B,0xDC,0x53,0x55,0x41,0x57,0x48,0x83,0xEC,0x50,
+        0x48,0x8D,0x99,0x90,0x17,0x01,0x00
+    };
+    static const unsigned char researchForTool[] = {
+        0x40,0x53,0x55,0x56,0x48,0x83,0xEC,0x30,
+        0x48,0x8D,0x99,0x90,0x17,0x01,0x00
+    };
 
     struct Probe { uintptr_t rva; const unsigned char* bytes; size_t size; const char* name; };
     const Probe probes[] = {
@@ -854,6 +889,12 @@ static bool ProbeBuild()
         { P_POINTER_PUSH, pointerPush, sizeof(pointerPush), "building pointer append" },
         { P_INT_PUSH, intPush, sizeof(intPush), "tab integer append" },
         { P_TOOL_FIND, getType, sizeof(getType), "construction-tool lookup" },
+        { P_BOTTOM_MENU_RENDER, bottomMenuRender, sizeof(bottomMenuRender),
+          "bottom menu renderer" },
+        { P_RESEARCH_FOR_BUILDING, researchForBuilding,
+          sizeof(researchForBuilding), "building research lookup" },
+        { P_RESEARCH_FOR_TOOL, researchForTool,
+          sizeof(researchForTool), "tool research lookup" },
     };
 
     for (size_t i = 0; i < sizeof(probes) / sizeof(probes[0]); ++i)
@@ -865,6 +906,80 @@ static bool ProbeBuild()
             return false;
         }
     }
+    return true;
+}
+
+// Keep the stock lower construction toolbar exactly where it is, but extend
+// only its white paper backing by one already-scaled native button step on the
+// left.  The right edge, category bands and buttons are deliberately left
+// untouched.
+static bool PatchBottomPaperLeft()
+{
+    static const unsigned char expected[] = {
+        0x0F,0x28,0xC1,                         // movaps xmm1, xmm0
+        0xF3,0x0F,0x10,0x55,0xE8,              // movss -0x18(%rbp), xmm2
+        0xF3,0x0F,0x5C,0xC2,                   // subss xmm2, xmm0
+        0xF3,0x0F,0x2C,0xD8,                   // cvttss2si xmm0, ebx
+        0x89,0x5C,0x24,0x70                    // mov ebx, 0x70(%rsp)
+    };
+    if (!BytesAre(P_BOTTOM_PAPER_LEFT, expected, sizeof(expected)))
+    {
+        H->log("tesmiomenu  bottom paper geometry differs at rva 0x%llX",
+               (unsigned long long)P_BOTTOM_PAPER_LEFT);
+        return false;
+    }
+
+    static const unsigned char bodyPrefix[] = {
+        0x0F,0x28,0xC1,                         // movaps xmm1, xmm0
+        0xF3,0x0F,0x10,0x55,0xE8,              // movss -0x18(%rbp), xmm2
+        0xF3,0x0F,0x5C,0xC2,                   // subss xmm2, xmm0
+        0xF3,0x0F,0x5C,0x45,0x94,              // subss -0x6c(%rbp), xmm0
+        0xF3,0x0F,0x2C,0xD8,                   // cvttss2si xmm0, ebx
+        0x89,0x5C,0x24,0x70                    // mov ebx, 0x70(%rsp)
+    };
+    const size_t jumpSize = 14;
+    const size_t captureSize = 12;               // movabs address + mov [rax], ebx
+    const size_t codeSize = sizeof(bodyPrefix) + captureSize + jumpSize;
+    unsigned char* code = (unsigned char*)VirtualAlloc(NULL, codeSize,
+                                                        MEM_COMMIT | MEM_RESERVE,
+                                                        PAGE_EXECUTE_READWRITE);
+    if (!code)
+    {
+        H->log("tesmiomenu  could not allocate bottom-paper geometry stub");
+        return false;
+    }
+    memcpy(code, bodyPrefix, sizeof(bodyPrefix));
+    unsigned char* capture = code + sizeof(bodyPrefix);
+    capture[0] = 0x48; capture[1] = 0xB8;        // movabs address, rax
+    void* capturedLeft = (void*)&g_nativeBottomPaperLeftPixels;
+    memcpy(capture + 2, &capturedLeft, sizeof(capturedLeft));
+    capture[10] = 0x89; capture[11] = 0x18;      // mov ebx, [rax]
+    unsigned char* codeJump = capture + captureSize;
+    codeJump[0] = 0xFF; codeJump[1] = 0x25;
+    memset(codeJump + 2, 0, 4);
+    void* resume = g_base + P_BOTTOM_PAPER_LEFT + sizeof(expected);
+    memcpy(codeJump + 6, &resume, sizeof(resume));
+
+    unsigned char replacement[sizeof(expected)] = {};
+    replacement[0] = 0xFF; replacement[1] = 0x25;
+    memcpy(replacement + 6, &code, sizeof(code));
+    memset(replacement + jumpSize, 0x90, sizeof(replacement) - jumpSize);
+
+    DWORD oldProtect = 0;
+    void* target = g_base + P_BOTTOM_PAPER_LEFT;
+    if (!VirtualProtect(target, sizeof(replacement), PAGE_EXECUTE_READWRITE, &oldProtect))
+    {
+        VirtualFree(code, 0, MEM_RELEASE);
+        H->log("tesmiomenu  could not unlock bottom-paper geometry code");
+        return false;
+    }
+    memcpy(target, replacement, sizeof(replacement));
+    FlushInstructionCache(GetCurrentProcess(), target, sizeof(replacement));
+    DWORD ignored = 0;
+    VirtualProtect(target, sizeof(replacement), oldProtect, &ignored);
+
+    g_bottomPaperCode = code;
+    H->log("tesmiomenu  bottom paper extended one slot to the left");
     return true;
 }
 
@@ -963,16 +1078,16 @@ static bool PatchFollowingBandStarts()
     };
     static const ConstantPatch later[] = {
         { 0x081ACB,
-          {0xF3,0x0F,0x59,0x0D,0x6D,0x8D,0x88,0x00}, // 10 steps
-          {0xF3,0x0F,0x59,0x0D,0x9D,0x8D,0x88,0x00}  // 11 steps
+          {0xF3,0x0F,0x59,0x0D,0x55,0x8D,0x88,0x00}, // 10 steps
+          {0xF3,0x0F,0x59,0x0D,0x85,0x8D,0x88,0x00}  // 11 steps
         },
         { 0x081C5D,
-          {0xF3,0x0F,0x59,0x0D,0x53,0x8C,0x88,0x00}, // 14 steps
-          {0xF3,0x0F,0x59,0x0D,0x7F,0x8C,0x88,0x00}  // 15 steps
+          {0xF3,0x0F,0x59,0x0D,0x3B,0x8C,0x88,0x00}, // 14 steps
+          {0xF3,0x0F,0x59,0x0D,0x67,0x8C,0x88,0x00}  // 15 steps
         },
         { 0x081DEF,
-          {0xF3,0x0F,0x59,0x0D,0x21,0x8B,0x88,0x00}, // 18 steps
-          {0xF3,0x0F,0x59,0x0D,0x39,0x8B,0x88,0x00}  // 19 steps
+          {0xF3,0x0F,0x59,0x0D,0x09,0x8B,0x88,0x00}, // 18 steps
+          {0xF3,0x0F,0x59,0x0D,0x21,0x8B,0x88,0x00}  // 19 steps
         }
     };
 
@@ -2867,6 +2982,14 @@ static int PopulateCustomTab(unsigned char* tab, char buildingNames[][96])
         pointerPush(members, &value);
     }
 
+    // The group is required structurally, but its stock tool list must stay
+    // empty.  Tesmio draws its own catalogue; any member left here is rendered
+    // by the vanilla submenu for one frame after a click on newer game builds.
+    // Keeping the allocation while setting end == begin preserves valid vector
+    // ownership without exposing a placeholder building card to the renderer.
+    if (H->readablePtr(members, sizeof(*members)) && members->begin)
+        members->end = members->begin;
+
     int groupTitle = g_textId;
     int groupBoundary = (int)((groups->end - groups->begin) / GROUP_SIZE);
     intPush(tab + 0x68, &groupTitle);
@@ -3010,6 +3133,9 @@ static void AddMenuTab()
         void* value = buildingTypes[i];
         pointerPush(members, &value);
     }
+
+    if (H->readablePtr(members, sizeof(*members)) && members->begin)
+        members->end = members->begin;
 
     // The vanilla initializer appends one title id and one cumulative group
     // boundary after constructing every group. AddMenuTab runs after that
@@ -3407,7 +3533,6 @@ static DWORD WINAPI CatalogThreadProc(void*)
 
 static const uintptr_t G_PANEL              = 0x9BE060;
 static const uintptr_t G_TECHNIQUE          = 0x9EAD08;
-static const uintptr_t G_PANEL_FULLSIZE     = 0x909F70;
 static const uintptr_t G_PANEL_POS          = 0x9BE2F0;
 static const uintptr_t G_PANEL_PAD          = 0x9BE2F8;
 static const uintptr_t G_PANEL_SIZE         = 0x9BE2E8;
@@ -3422,12 +3547,14 @@ static const size_t TEX_LOAD2D_FILE         = 0x10;
 static const size_t TEX_BIND                = 0x70;
 
 typedef void  (*t_BottomMenuRender)(void*, float);
+typedef void  (*t_ConstructionRender)(void*);
 typedef void  (*t_PanelDraw)(void*, float, float, float, float, float, bool);
 typedef void* (*t_CreateManagedTexture)(void*, const char*);
 typedef void  (*t_PrintLeftUnicode)(void*, void*, float, float, unsigned long,
                                     const wchar_t*, ...);
 
 static t_BottomMenuRender o_BottomMenuRender;
+static t_ConstructionRender o_ConstructionRender;
 static t_PanelDraw o_PanelDraw;
 static t_CreateManagedTexture o_CreateManagedTexture;
 static t_PrintLeftUnicode o_PrintLeftUnicode;
@@ -3474,8 +3601,201 @@ static void NativeDrawTexture(void* texture, float x, float y,
     // helpers use ordinary top-left screen coordinates.
     NativeSetRect(x + width * 0.5f, y + height * 0.5f, width, height);
     NativeSetColor(red, green, blue, alpha);
-    float full = *(float*)(g_base + G_PANEL_FULLSIZE);
-    o_PanelDraw(g_base + G_PANEL, 0.0f, 0.0f, full, full, 0.0f, true);
+    // Draw the complete source texture.  Older game builds exposed the value
+    // 1.0 through a global float, but that global moved in 1.1.1.9.  Reading
+    // the old address made every catalogue texture repeat as a small grid.
+    o_PanelDraw(g_base + G_PANEL, 0.0f, 0.0f, 1.0f, 1.0f, 0.0f, true);
+}
+
+static void h_PanelDraw(void* panel, float u0, float v0, float u1, float v1,
+                        float rotation, bool enabled)
+{
+    if (g_captureBottomPanels && g_bottomPanelCount < 512 &&
+        panel != g_base + G_PANEL)
+    {
+        int screenWidth = *(int*)(g_base + G_SCREEN_WIDTH);
+        int screenHeight = *(int*)(g_base + G_SCREEN_HEIGHT);
+        // Every stock HUD element owns its own C3D_PANEL2D instance. Reading
+        // the global catalogue panel here captured our scratch panel instead
+        // of the lower toolbar, which is why the button fell back to (18, H).
+        // The rectangle fields use the same offsets in each panel instance.
+        if (!panel || !H->readablePtr((unsigned char*)panel + 0x288, 16))
+        {
+            o_PanelDraw(panel, u0, v0, u1, v1, rotation, enabled);
+            return;
+        }
+        float* size = (float*)((unsigned char*)panel + 0x288);
+        float* position = (float*)((unsigned char*)panel + 0x290);
+        float width = size[0];
+        float height = size[1];
+        float left = position[0] - width * 0.5f;
+        float top = position[1] - height * 0.5f;
+        float right = left + width;
+        float bottom = top + height;
+        if (width >= 12.0f && width <= (float)screenWidth * 1.5f &&
+            height >= 12.0f && height <= 160.0f &&
+            bottom >= 0.0f && top <= (float)screenHeight &&
+            right >= 0.0f && left <= (float)screenWidth)
+        {
+            g_bottomPanels[g_bottomPanelCount++] = { left, top, right, bottom };
+            // The stock construction paper is the widest panel touching the
+            // bottom edge. Remember its real geometry after the game has
+            // applied resolution and UI scaling.
+            if (top >= (float)screenHeight - 180.0f &&
+                bottom >= (float)screenHeight - 3.0f &&
+                width >= (float)screenWidth * 0.35f &&
+                (!g_nativeBottomPaperValid ||
+                 width > g_nativeBottomPaper.right - g_nativeBottomPaper.left))
+            {
+                g_nativeBottomPaper = { left, top, right, bottom };
+                g_nativeBottomPaperValid = true;
+            }
+        }
+    }
+    o_PanelDraw(panel, u0, v0, u1, v1, rotation, enabled);
+}
+
+static bool CapturedBottomBar(float* left, float* top,
+                              float* right, float* bottom)
+{
+    int screenWidth = *(int*)(g_base + G_SCREEN_WIDTH);
+    float center = (float)screenWidth * 0.5f;
+    float lowestBottom = -100000.0f;
+    for (int i = 0; i < g_bottomPanelCount; ++i)
+    {
+        const CapturedPanelRect& rectangle = g_bottomPanels[i];
+        float height = rectangle.bottom - rectangle.top;
+        if (height >= 24.0f && height <= 140.0f &&
+            rectangle.bottom > lowestBottom)
+            lowestBottom = rectangle.bottom;
+    }
+    if (lowestBottom < 0.0f) return false;
+    int seed = -1;
+    float seedDistance = 1000000.0f;
+    for (int i = 0; i < g_bottomPanelCount; ++i)
+    {
+        const CapturedPanelRect& rectangle = g_bottomPanels[i];
+        float height = rectangle.bottom - rectangle.top;
+        if (height < 24.0f || height > 140.0f ||
+            rectangle.bottom < lowestBottom - 24.0f)
+            continue;
+        float distance = 0.0f;
+        if (center < rectangle.left) distance = rectangle.left - center;
+        else if (center > rectangle.right) distance = center - rectangle.right;
+        if (distance < seedDistance)
+        {
+            seed = i;
+            seedDistance = distance;
+        }
+    }
+    if (seed < 0) return false;
+
+    float resultLeft = g_bottomPanels[seed].left;
+    float resultTop = g_bottomPanels[seed].top;
+    float resultRight = g_bottomPanels[seed].right;
+    float resultBottom = g_bottomPanels[seed].bottom;
+    bool changed = true;
+    while (changed)
+    {
+        changed = false;
+        for (int i = 0; i < g_bottomPanelCount; ++i)
+        {
+            const CapturedPanelRect& rectangle = g_bottomPanels[i];
+            float verticalOverlap =
+                (resultBottom < rectangle.bottom ? resultBottom : rectangle.bottom) -
+                (resultTop > rectangle.top ? resultTop : rectangle.top);
+            float horizontalGap = 0.0f;
+            if (rectangle.right < resultLeft)
+                horizontalGap = resultLeft - rectangle.right;
+            else if (rectangle.left > resultRight)
+                horizontalGap = rectangle.left - resultRight;
+            if (verticalOverlap > 12.0f && horizontalGap <= 14.0f)
+            {
+                float oldLeft = resultLeft, oldTop = resultTop;
+                float oldRight = resultRight, oldBottom = resultBottom;
+                if (rectangle.left < resultLeft) resultLeft = rectangle.left;
+                if (rectangle.top < resultTop) resultTop = rectangle.top;
+                if (rectangle.right > resultRight) resultRight = rectangle.right;
+                if (rectangle.bottom > resultBottom) resultBottom = rectangle.bottom;
+                changed = changed || oldLeft != resultLeft || oldTop != resultTop ||
+                          oldRight != resultRight || oldBottom != resultBottom;
+            }
+        }
+    }
+    if (resultRight - resultLeft < 300.0f) return false;
+    *left = resultLeft; *top = resultTop;
+    *right = resultRight; *bottom = resultBottom;
+    return true;
+}
+
+static bool CapturedNativeBottomButtonY(float expectedSize, float* y)
+{
+    if (!y || expectedSize <= 0.0f) return false;
+    int screenWidth = *(int*)(g_base + G_SCREEN_WIDTH);
+    int screenHeight = *(int*)(g_base + G_SCREEN_HEIGHT);
+    float bestScore = 1000000.0f;
+    float bestY = 0.0f;
+    for (int i = 0; i < g_bottomPanelCount; ++i)
+    {
+        const CapturedPanelRect& rectangle = g_bottomPanels[i];
+        float width = rectangle.right - rectangle.left;
+        float height = rectangle.bottom - rectangle.top;
+        // Ignore the standalone button itself and all upper HUD controls.
+        // The stock construction buttons occupy the centred lower strip and
+        // are square panels drawn with the native level-1 slot dimensions.
+        if (rectangle.left < (float)screenWidth * 0.12f ||
+            rectangle.right > (float)screenWidth * 0.88f ||
+            rectangle.top < (float)screenHeight - 180.0f ||
+            rectangle.bottom > (float)screenHeight + 2.0f)
+            continue;
+        if (width < expectedSize * 0.70f || width > expectedSize * 1.30f ||
+            height < expectedSize * 0.70f || height > expectedSize * 1.30f)
+            continue;
+        float squarePenalty = width > height ? width - height : height - width;
+        float sizePenalty = width > expectedSize
+            ? width - expectedSize : expectedSize - width;
+        float score = squarePenalty * 3.0f + sizePenalty;
+        if (score < bestScore)
+        {
+            bestScore = score;
+            bestY = rectangle.top;
+        }
+    }
+    if (bestScore >= 1000000.0f) return false;
+    *y = bestY;
+    return true;
+}
+
+static bool CapturedNativeFirstButtonX(float expectedSize, float rowY,
+                                       float* x)
+{
+    if (!x || expectedSize <= 0.0f) return false;
+    int screenWidth = *(int*)(g_base + G_SCREEN_WIDTH);
+    int screenHeight = *(int*)(g_base + G_SCREEN_HEIGHT);
+    float firstLeft = 1000000.0f;
+    for (int i = 0; i < g_bottomPanelCount; ++i)
+    {
+        const CapturedPanelRect& rectangle = g_bottomPanels[i];
+        float width = rectangle.right - rectangle.left;
+        float height = rectangle.bottom - rectangle.top;
+        if (rectangle.left < (float)screenWidth * 0.05f ||
+            rectangle.right > (float)screenWidth * 0.88f ||
+            rectangle.top < (float)screenHeight - 180.0f ||
+            rectangle.bottom > (float)screenHeight + 2.0f)
+            continue;
+        if (width < expectedSize * 0.70f || width > expectedSize * 1.30f ||
+            height < expectedSize * 0.70f || height > expectedSize * 1.30f)
+            continue;
+        float rowDistance = rectangle.top > rowY
+            ? rectangle.top - rowY : rowY - rectangle.top;
+        if (rowDistance > expectedSize * 0.20f) continue;
+        if (rectangle.left < firstLeft) firstLeft = rectangle.left;
+    }
+    if (firstLeft >= 1000000.0f) return false;
+    // The paper was extended by exactly one native slot, so the catalogue
+    // occupies the slot immediately preceding the first stock Roads button.
+    *x = firstLeft - expectedSize;
+    return true;
 }
 
 static void NativePrint(const wchar_t* text, float x, float y,
@@ -3650,8 +3970,18 @@ static bool LoadCatalogTextures()
         g_catalogTexture = LoadNativeTexture("editor/bottommenu_area_white.png");
     if (!g_catalogSolidTexture)
         g_catalogSolidTexture = LoadNativeTexture("editor/white.png");
+    if (!g_toolbarTexture)
+        g_toolbarTexture = LoadNativeTexture("editor/bottomtab_tesmioloader.png");
     if (!g_favoriteTexture)
         g_favoriteTexture = LoadNativeTexture("editor/favorite.png");
+    if (!g_catalogTexture || !g_catalogSolidTexture || !g_toolbarTexture)
+        return false;
+    return true;
+}
+
+static void* CenteredLockTexture(int reason)
+{
+    if (reason < 1 || reason > 16) return NULL;
     static const char* centeredLockPaths[16] = {
         "editor/tesmio_catalog_locks/locked_pollution.png",
         "editor/tesmio_catalog_locks/locked_education.png",
@@ -3670,11 +4000,10 @@ static bool LoadCatalogTextures()
         "editor/tesmio_catalog_locks/locked_dlc.png",
         "editor/tesmio_catalog_locks/locked_terrain.png"
     };
-    for (int i = 0; i < 16; ++i)
-        if (!g_centeredLockTextures[i])
-            g_centeredLockTextures[i] = LoadNativeTexture(centeredLockPaths[i]);
-    if (!g_catalogTexture || !g_catalogSolidTexture) return false;
-    return true;
+    int index = reason - 1;
+    if (!g_centeredLockTextures[index])
+        g_centeredLockTextures[index] = LoadNativeTexture(centeredLockPaths[index]);
+    return g_centeredLockTextures[index];
 }
 
 static bool PointInside(float mouseX, float mouseY, float x, float y,
@@ -3731,6 +4060,25 @@ static bool CatalogCursorInsideClient(HWND window)
     return PointInside(mouseX, mouseY, x, y, width, height);
 }
 
+static bool StandaloneButtonHovered(HWND window)
+{
+    if (!window || !IsWindow(window) || g_standaloneButtonSize <= 0.0f)
+        return false;
+    RECT client = {};
+    POINT cursor = {};
+    if (!GetClientRect(window, &client) || client.right <= 0 ||
+        client.bottom <= 0 || !GetCursorPos(&cursor) ||
+        !ScreenToClient(window, &cursor))
+        return false;
+    int screenWidth = *(int*)(g_base + G_SCREEN_WIDTH);
+    int screenHeight = *(int*)(g_base + G_SCREEN_HEIGHT);
+    float mouseX = (float)cursor.x * (float)screenWidth / (float)client.right;
+    float mouseY = (float)cursor.y * (float)screenHeight / (float)client.bottom;
+    return PointInside(mouseX, mouseY, g_standaloneButtonX,
+                       g_standaloneButtonY, g_standaloneButtonSize,
+                       g_standaloneButtonSize);
+}
+
 static bool ShouldShieldEngineMouse()
 {
     HWND window = g_inputShieldWindow;
@@ -3742,7 +4090,7 @@ static bool ShouldShieldEngineMouse()
             processId != GetCurrentProcessId())
             return false;
     }
-    return CatalogCursorInsideClient(window);
+    return CatalogCursorInsideClient(window) || StandaloneButtonHovered(window);
 }
 
 static void h_InputRefreshData(void* self, HWND window, void* timer)
@@ -3771,7 +4119,7 @@ static bool InstallEngineMouseShield()
         engine, "?RefreshData@C3D_INPUT@@QEAAXPEAUHWND__@@PEAVC3D_TIMER@@@Z");
     if (!refresh)
     {
-        H->log("tesmiomenu  engine input shield: RefreshData export missing");
+        H->log("tesmiomenu  engine input shield: input export missing");
         return false;
     }
 
@@ -3794,6 +4142,20 @@ static bool InstallEngineMouseShield()
 static LRESULT CALLBACK GameWindowInputShield(HWND window, UINT message,
                                                WPARAM wParam, LPARAM lParam)
 {
+    bool standalone = StandaloneButtonHovered(window);
+    if ((message == WM_LBUTTONDOWN || message == WM_LBUTTONDBLCLK) &&
+        standalone)
+    {
+        g_standaloneButtonCapture = true;
+        InterlockedExchange(&g_standaloneToggleRequested, 1);
+        return 0;
+    }
+    if (message == WM_LBUTTONUP && g_standaloneButtonCapture)
+    {
+        g_standaloneButtonCapture = false;
+        return 0;
+    }
+
     bool inside = CatalogCursorInsideClient(window);
     switch (message)
     {
@@ -5215,7 +5577,17 @@ static void DrawNativeCatalog()
     for (int i = 0; i < g_catalogItemCount; ++i)
         if (CatalogItemPassesFilters(g_catalogItems[i])) matches[resultCount++] = i;
 
-    const int pageSize = 4;
+    const float cardGap = 18.0f;
+    const float cardWidth = (width - 98.0f - cardGap) * 0.5f;
+    const float cardTop = 188.0f;
+    const float footerReserve = 80.0f;
+    const float fittedTwoRowHeight =
+        (height - cardTop - footerReserve - cardGap) * 0.5f;
+    const bool useTwoCardRows = fittedTwoRowHeight >= 210.0f;
+    const int pageSize = useTwoCardRows ? 4 : 2;
+    float cardHeight = useTwoCardRows ? fittedTwoRowHeight : 244.0f;
+    if (cardHeight > 244.0f) cardHeight = 244.0f;
+    const float cardVerticalScale = cardHeight / 244.0f;
     int pageCount = resultCount > 0 ? (resultCount + pageSize - 1) / pageSize : 1;
     if (g_resultPage >= pageCount) g_resultPage = pageCount - 1;
     if (g_resultPage < 0) g_resultPage = 0;
@@ -5231,9 +5603,6 @@ static void DrawNativeCatalog()
         NativePrint(resultText, x + 40.0f, y + 158.0f, 0xFF6A5E4Du);
     }
 
-    const float cardGap = 18.0f;
-    const float cardWidth = (width - 98.0f - cardGap) * 0.5f;
-    const float cardHeight = 244.0f;
     int firstResult = g_resultPage * pageSize;
     int lastResult = firstResult + pageSize;
     if (lastResult > resultCount) lastResult = resultCount;
@@ -5248,7 +5617,7 @@ static void DrawNativeCatalog()
             int row = local / 2;
             const CatalogItem& item = g_catalogItems[matches[position]];
             float cardX = x + 40.0f + column * (cardWidth + cardGap);
-            float cardY = y + 188.0f + row * (cardHeight + cardGap);
+            float cardY = y + cardTop + row * (cardHeight + cardGap);
             float imageX = cardX + 16.0f;
             float imageWidth = cardWidth * 0.34f;
             float textX = imageX + imageWidth + 16.0f;
@@ -5269,22 +5638,25 @@ static void DrawNativeCatalog()
             int relation = -1;
             const wchar_t* title = NULL;
             if (ApproximateTextWidth(resourceText) > textWidth &&
-                PointInside(mouseX, mouseY, textX, cardY + 75.0f,
-                            textWidth, 29.0f))
+                PointInside(mouseX, mouseY, textX,
+                            cardY + 75.0f * cardVerticalScale,
+                            textWidth, 29.0f * cardVerticalScale))
             {
                 relation = 0;
                 title = Ui(UI_RESOURCE);
             }
             else if (ApproximateTextWidth(produces) > textWidth &&
-                     PointInside(mouseX, mouseY, textX, cardY + 141.0f,
-                                 textWidth, 29.0f))
+                     PointInside(mouseX, mouseY, textX,
+                                 cardY + 141.0f * cardVerticalScale,
+                                 textWidth, 29.0f * cardVerticalScale))
             {
                 relation = 1;
                 title = Ui(UI_PRODUCES_PREFIX);
             }
             else if (ApproximateTextWidth(consumes) > textWidth &&
-                     PointInside(mouseX, mouseY, textX, cardY + 175.0f,
-                                 textWidth, 29.0f))
+                     PointInside(mouseX, mouseY, textX,
+                                 cardY + 175.0f * cardVerticalScale,
+                                 textWidth, 29.0f * cardVerticalScale))
             {
                 relation = 2;
                 title = Ui(UI_CONSUMES_PREFIX);
@@ -5316,7 +5688,7 @@ static void DrawNativeCatalog()
         int row = local / 2;
         CatalogItem& item = g_catalogItems[matches[position]];
         float cardX = x + 40.0f + column * (cardWidth + cardGap);
-        float cardY = y + 188.0f + row * (cardHeight + cardGap);
+        float cardY = y + cardTop + row * (cardHeight + cardGap);
         bool cardInteractive = g_openDropdown == 0;
         bool cardHovered = cardInteractive &&
                            PointInside(mouseX, mouseY, cardX, cardY,
@@ -5382,10 +5754,7 @@ static void DrawNativeCatalog()
             }
             if (!cornerPictogramReason)
                 cornerPictogramReason = CatalogLockReasonFromItem(item);
-            void* centeredPictogram = cornerPictogramReason >= 1 &&
-                                      cornerPictogramReason <= 16
-                ? g_centeredLockTextures[cornerPictogramReason - 1]
-                : NULL;
+            void* centeredPictogram = CenteredLockTexture(cornerPictogramReason);
             if (centeredPictogram)
             {
                 const float pictogramSize = 48.0f;
@@ -5433,13 +5802,15 @@ static void DrawNativeCatalog()
             float textWidth = cardX + cardWidth - 26.0f - textX;
             const unsigned long cardText = available ? 0xFF2B2925u
                                                       : 0xFF77736Cu;
-            NativePrintFitted(item.display, textX, cardY + 18.0f,
+            NativePrintFitted(item.display, textX,
+                              cardY + 18.0f * cardVerticalScale,
                               textWidth, cardText);
 
             wchar_t typeText[192] = {};
             wcsncpy_s(typeText, 192, Ui(UI_TYPE_PREFIX), _TRUNCATE);
             wcscat_s(typeText, 192, g_catalogTypes[item.typeIndex].display);
-            NativePrintFitted(typeText, textX, cardY + 50.0f,
+            NativePrintFitted(typeText, textX,
+                              cardY + 50.0f * cardVerticalScale,
                               textWidth, cardText);
 
             wchar_t resources[384] = {};
@@ -5447,13 +5818,15 @@ static void DrawNativeCatalog()
             wchar_t resourceText[448] = {};
             wcsncpy_s(resourceText, 448, Ui(UI_RESOURCE_PREFIX), _TRUNCATE);
             wcscat_s(resourceText, 448, resources);
-            NativePrintFitted(resourceText, textX, cardY + 80.0f,
+            NativePrintFitted(resourceText, textX,
+                              cardY + 80.0f * cardVerticalScale,
                               textWidth, cardText);
 
             wchar_t sourceText[96] = {};
             wcsncpy_s(sourceText, 96, Ui(UI_SOURCE_PREFIX), _TRUNCATE);
             wcscat_s(sourceText, 96, CatalogSourceLabel(item.source));
-            NativePrintFitted(sourceText, textX, cardY + 110.0f,
+            NativePrintFitted(sourceText, textX,
+                              cardY + 110.0f * cardVerticalScale,
                               textWidth, cardText);
 
             wchar_t produces[448] = {};
@@ -5462,13 +5835,16 @@ static void DrawNativeCatalog()
                               item.metadata.produceCount, produces, 448);
             BuildRelationText(Ui(UI_CONSUMES_PREFIX), item.metadata.consumes,
                               item.metadata.consumeCount, consumes, 448);
-            NativePrintFitted(produces, textX, cardY + 146.0f,
+            NativePrintFitted(produces, textX,
+                              cardY + 146.0f * cardVerticalScale,
                               textWidth, cardText);
-            NativePrintFitted(consumes, textX, cardY + 180.0f,
+            NativePrintFitted(consumes, textX,
+                              cardY + 180.0f * cardVerticalScale,
                               textWidth, cardText);
             if (!available)
                 NativePrintFitted(Ui(UI_UNAVAILABLE), textX,
-                                  cardY + 211.0f, textWidth, 0xFF77736Cu);
+                                  cardY + 211.0f * cardVerticalScale,
+                                  textWidth, 0xFF77736Cu);
         }
         if (cardHovered && pressed && available && !starHovered)
             g_pendingCatalogItem = matches[position];
@@ -5581,41 +5957,117 @@ static void ToggleCatalogFromToolbar()
            g_catalogVisible ? "opened" : "closed");
 }
 
+static int ReadBottomMenuLevel1Scale()
+{
+    char path[2 * MAX_PATH] = {};
+    DWORD length = GetModuleFileNameA(NULL, path, (DWORD)sizeof(path));
+    if (!length || length >= sizeof(path)) return 0;
+    char* slash = strrchr(path, '\\');
+    if (!slash) return 0;
+    strcpy_s(slash + 1, sizeof(path) - (size_t)(slash + 1 - path),
+             "media_soviet\\config.ini");
+
+    HANDLE file = CreateFileA(path, GENERIC_READ,
+                              FILE_SHARE_READ | FILE_SHARE_WRITE,
+                              NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (file == INVALID_HANDLE_VALUE) return 0;
+    LARGE_INTEGER size = {};
+    if (!GetFileSizeEx(file, &size) || size.QuadPart <= 0 ||
+        size.QuadPart > 2 * 1024 * 1024)
+    {
+        CloseHandle(file);
+        return 0;
+    }
+    char* data = (char*)malloc((size_t)size.QuadPart + 1);
+    if (!data) { CloseHandle(file); return 0; }
+    DWORD read = 0;
+    bool ok = ReadFile(file, data, (DWORD)size.QuadPart, &read, NULL) != FALSE;
+    CloseHandle(file);
+    if (!ok) { free(data); return 0; }
+    data[read] = 0;
+
+    int value = 0;
+    const char* key = "BOTTOM_MENU_LEVEL_1_SCALE";
+    char* found = strstr(data, key);
+    if (found)
+    {
+        found += strlen(key);
+        while (*found == ' ' || *found == '\t') ++found;
+        value = atoi(found);
+        if (value < -100) value = -100;
+        if (value > 300) value = 300;
+    }
+    free(data);
+    return value;
+}
+
+static float NativeBottomMenuButtonSize()
+{
+    float uiScale = *(float*)(g_base + G_UI_SCALE);
+    if (uiScale <= 0.05f || uiScale > 8.0f) uiScale = 1.0f;
+    // This is the game's own level-1 slot formula used by the lower toolbar:
+    // 50 px * global UI scale * (1 + configured percentage * 0.003).
+    float configuredScale = 1.0f + (float)g_bottomMenuLevel1Scale * 0.003f;
+    return 50.0f * uiScale * configuredScale;
+}
+
+static void DrawStandaloneCatalogButton(void* controller)
+{
+    if (!controller || !LoadCatalogTextures())
+        return;
+
+    int screenWidth = *(int*)(g_base + G_SCREEN_WIDTH);
+    int screenHeight = *(int*)(g_base + G_SCREEN_HEIGHT);
+    // Keep this control completely independent from the stock construction
+    // tabs.  For this verification pass it lives at a fixed lower-left screen
+    // anchor, so opening it cannot select or animate a vanilla build group.
+    float size = NativeBottomMenuButtonSize();
+    float x = 12.0f;
+    // The stock level-1 button textures are anchored at the top of the
+    // 82-unit construction-paper strip (the slot width itself is 50 units).
+    // Use that exact vertical formula instead of the old screen-bottom inset.
+    float paperHeight = 82.0f * (size / 50.0f);
+    float y = (float)screenHeight - paperHeight + 10.0f * (size / 50.0f) + 1.0f;
+    if (g_nativeBottomPaperValid)
+    {
+        float paperHeight = g_nativeBottomPaper.bottom - g_nativeBottomPaper.top;
+        float inset = (paperHeight - size) * 0.5f;
+        if (inset < 0.0f) inset = 0.0f;
+        x = g_nativeBottomPaper.left + inset;
+    }
+    LONG nativePaperLeft = g_nativeBottomPaperLeftPixels;
+    if (nativePaperLeft >= 0)
+    {
+        // Match the stock horizontal padding between the paper edge, this
+        // slot and the grey Transport group. Vertical placement is fixed.
+        float inset = 10.0f * (size / 50.0f);
+        x = (float)nativePaperLeft + inset;
+    }
+
+    g_standaloneButtonX = x;
+    g_standaloneButtonY = y;
+    g_standaloneButtonSize = size;
+
+    float mouseX = -1000.0f;
+    float mouseY = -1000.0f;
+    ReadGameMouse(screenWidth, screenHeight, &mouseX, &mouseY);
+    bool hovered = PointInside(mouseX, mouseY, x, y, size, size);
+    float tint = g_catalogVisible ? 0.82f : (hovered ? 1.0f : 0.94f);
+    NativeDrawTexture(g_toolbarTexture, x, y, size, size,
+                      tint, tint, tint, 1.0f);
+}
+
 static void h_BottomMenuRender(void* self, float scale)
 {
     EnsureGameInputShield();
     g_bottomMenuController = self;
-    RawVector* tabs = (RawVector*)(g_base + G_BOTTOM_TABS);
     unsigned char** selected = (unsigned char**)(g_base + G_SELECTED_BOTTOM_TAB);
-    bool leftDown = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
-    bool validSelection = H->readablePtr(tabs, sizeof(*tabs)) && tabs->begin &&
-                          H->readablePtr(selected, sizeof(*selected));
-    unsigned char* customTab = validSelection ? FindCustomTab(tabs) : NULL;
-    bool customSelected = customTab && *selected == customTab;
-    if (g_suppressCustomSelection)
-    {
-        if (customSelected) *selected = NULL;
-        *(unsigned char*)(g_base + G_CLICK_FLAG) = 0;
-        if (!leftDown) g_suppressCustomSelection = false;
-    }
-    else if (customSelected)
-    {
-        if (!g_toolbarToggleLatch)
-            ToggleCatalogFromToolbar();
-        g_toolbarToggleLatch = true;
-        // NULL is a supported "no build category" state in the renderer. It
-        // keeps the catalog independent instead of opening Roads behind it.
-        *selected = NULL;
-    }
-    else if (!leftDown)
-    {
-        g_toolbarToggleLatch = false;
-    }
+    bool validSelection = H->readablePtr(selected, sizeof(*selected));
 
-    // Selecting a real stock category closes the catalog and lets that menu
-    // open normally. While the catalog remains visible there is no hidden
-    // native construction strip underneath it.
-    if (validSelection && g_catalogVisible && *selected && *selected != customTab)
+    if (InterlockedExchange(&g_standaloneToggleRequested, 0) != 0)
+        ToggleCatalogFromToolbar();
+
+    if (validSelection && g_catalogVisible && *selected)
     {
         g_pendingCatalogItem = -1;
         g_catalogVisible = false;
@@ -5628,21 +6080,6 @@ static void h_BottomMenuRender(void* self, float scale)
     if (validSelection && g_catalogVisible) *selected = NULL;
 
     o_BottomMenuRender(self, scale);
-    // Let the stock renderer perform its own exact hit test for the custom
-    // icon.  The previous manual rectangle used the height of the entire
-    // toolbar and created an invisible clickable area above the aeroplane
-    // button.  Handling the resulting native selection keeps the hitbox equal
-    // to the visible button at every resolution and UI scale.
-    bool customSelectedAfterRender = validSelection && customTab &&
-                                     *selected == customTab;
-    if (customSelectedAfterRender)
-    {
-        if (!g_suppressCustomSelection && !g_toolbarToggleLatch)
-            ToggleCatalogFromToolbar();
-        g_toolbarToggleLatch = true;
-        *selected = NULL;
-        *(unsigned char*)(g_base + G_CLICK_FLAG) = 0;
-    }
     if (validSelection && g_catalogVisible) *selected = NULL;
 
     bool escapeDown = (GetAsyncKeyState(VK_ESCAPE) & 0x8000) != 0;
@@ -5665,10 +6102,25 @@ static void h_BottomMenuRender(void* self, float scale)
         HideResourceTooltipWindow();
 }
 
+static void h_ConstructionRender(void* self)
+{
+    o_ConstructionRender(self);
+    // Draw last, after the stock construction paper and its category buttons,
+    // so the independent catalogue icon remains on the foreground layer.
+    DrawStandaloneCatalogButton(self);
+}
+
 static bool ResolveNativeCatalogImports()
 {
+    if (!H->patchIat(H->exeModule, ENGINE_DLL,
+                     "?Draw@C3D_PANEL2D@@QEAAXMMMMM_N@Z",
+                     (void*)h_PanelDraw, (void**)&o_PanelDraw,
+                     "tesmiomenu bottom-panel geometry capture"))
+    {
+        H->log("tesmiomenu  native panel draw import unavailable");
+        return false;
+    }
     struct Import { const char* name; void** target; } imports[] = {
-        { "?Draw@C3D_PANEL2D@@QEAAXMMMMM_N@Z", (void**)&o_PanelDraw },
         { "?CreateManagedTexture@C3D_MIDDLEPOINT@@QEAAPEAVC3DAPI_TEXTURE@@PEBD@Z",
           (void**)&o_CreateManagedTexture },
         { "?PrintLeftUnicode@C3D_FONTMANAGER@@QEAAXPEAVC3D_FONT@@MMKPEB_WZZ",
@@ -5694,6 +6146,7 @@ static void h_MenuInit(void)
     o_MenuInit();
     g_insideMenuInit = false;
     DetectCatalogLanguage();
+    g_bottomMenuLevel1Scale = ReadBottomMenuLevel1Scale();
     RefreshCatalogResourceLabels();
 
     // A menu rebuild denotes a new engine UI generation (including creation or
@@ -5708,12 +6161,21 @@ static void h_MenuInit(void)
     g_catalogInputArmed = false;
     g_catalogAvailabilityWarmupFrames = 0;
     g_toolbarToggleLatch = false;
+    g_toolbarMouseWasDown = false;
+    g_standaloneButtonCapture = false;
+    InterlockedExchange(&g_standaloneToggleRequested, 0);
+    g_standaloneButtonX = -1.0f;
+    g_standaloneButtonY = -1.0f;
+    g_standaloneButtonSize = 0.0f;
+    g_bottomPanelCount = 0;
+    g_nativeBottomPaper = {};
+    g_nativeBottomPaperValid = false;
+    g_captureBottomPanels = true;
     g_catalogX = -1.0f;
     g_catalogY = -1.0f;
     ResetCatalogTextureState();
     H->log("tesmiomenu  catalog textures reset for rebuilt game menu");
 
-    if (!g_nativeFrontInserted) AddMenuTab();
     CaptureCatalogTypes();
     CaptureCatalogItems();
 }
@@ -5728,7 +6190,7 @@ extern "C" __declspec(dllexport) int TsmPluginInit(const TsmHost* host, TsmPlugi
     H = host;
     g_base = host->exeBase;
     info->name = "Tesmio Catalog";
-    info->version = "1.2.1";
+    info->version = "1.2.2";
     ReadSettings();
     LoadEnglishTextTable();
     LoadRussianTextTable();
@@ -5742,18 +6204,10 @@ extern "C" __declspec(dllexport) int TsmPluginInit(const TsmHost* host, TsmPlugi
 extern "C" __declspec(dllexport) int TsmPluginStart(void)
 {
     if (!ProbeBuild()) return 1;
-    if (!PatchFirstBandStart()) return 1;
-    if (!PatchFollowingBandStarts()) return 1;
 
-    static const unsigned char tabConstruct[] = {
-        0x48,0x89,0x5C,0x24,0x10,0x48,0x89,0x74,0x24,0x18,
-        0x57,0x48,0x81,0xEC,0x50,0x01,0x00,0x00
-    };
-    if (!H->installInlineHook(g_base + P_TAB_CONSTRUCT, (void*)h_TabConstruct,
-                              (void**)&o_TabConstruct, tabConstruct, sizeof(tabConstruct),
-                              "tesmiomenu native tab construction"))
+    if (!PatchBottomPaperLeft())
     {
-        H->log("tesmiomenu  tab-construction hook failed");
+        H->log("tesmiomenu  bottom-paper extension failed");
         return 1;
     }
 
@@ -5787,6 +6241,20 @@ extern "C" __declspec(dllexport) int TsmPluginStart(void)
         H->log("tesmiomenu  native catalog renderer hook failed");
         return 1;
     }
+    static const unsigned char constructionRender[] = {
+        0x48,0x8B,0xC4,0x55,0x41,0x54,0x41,0x55,
+        0x41,0x56,0x41,0x57,0x48,0x8D,0xA8,0x28,
+        0xF4,0xFF,0xFF
+    };
+    if (!H->installInlineHook(g_base + P_CONSTRUCTION_RENDER,
+                              (void*)h_ConstructionRender,
+                              (void**)&o_ConstructionRender,
+                              constructionRender, sizeof(constructionRender),
+                              "tesmiomenu foreground catalogue button"))
+    {
+        H->log("tesmiomenu  construction renderer hook failed");
+        return 1;
+    }
     g_catalogNativeReady = true;
 
     // The world picker reads C3D_INPUT's state bytes directly, bypassing both
@@ -5797,7 +6265,6 @@ extern "C" __declspec(dllexport) int TsmPluginStart(void)
         H->log("tesmiomenu  direct engine input shield unavailable");
         return 1;
     }
-
     // Patch language only after the permanent menu hook succeeded. Returning a
     // failure after an IAT swap would let the loader unload code still named by
     // that slot.
